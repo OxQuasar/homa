@@ -179,27 +179,52 @@ func buildProvisioner(cfg *config.Config, branchesDir string, ports *provision.P
 		log.Warn("ANTHROPIC_API_KEY expanded to empty; sandbox API calls will fail until set")
 	}
 
+	credsPath := resolveClaudeCredentialsPath(cfg.ClaudeCredentialsPath, log)
+
 	runner := sandbox.ExecRunner{}
 	pp := &provision.PodmanProvisioner{
-		Worktree:          worktree.New(cfg.GitBin, runner),
-		Sandbox:           sandbox.NewPodmanManager(cfg.PodmanBin, runner),
-		TSServe:           tsserve.New(cfg.TailscaleBin, runner),
-		Users:             st,
-		Ports:             ports,
-		SiteTemplateDir:   siteTemplateDir,
-		BranchesDir:       branchesDir,
-		ImageRef:          cfg.ImageRef,
-		PreviewBaseURL:    cfg.PreviewBaseURL,
-		MemoryLimit:       cfg.ContainerMemory,
-		CPULimit:          cfg.ContainerCPUs,
-		AnthropicAPIKey:   apiKey,
-		ReadinessTimeout:  time.Duration(cfg.ReadinessTimeoutSec) * time.Second,
-		ReadinessInterval: time.Duration(cfg.ReadinessIntervalMS) * time.Millisecond,
-		Log:               log,
+		Worktree:              worktree.New(cfg.GitBin, runner),
+		Sandbox:               sandbox.NewPodmanManager(cfg.PodmanBin, runner),
+		TSServe:               tsserve.New(cfg.TailscaleBin, runner),
+		Users:                 st,
+		Ports:                 ports,
+		SiteTemplateDir:       siteTemplateDir,
+		BranchesDir:           branchesDir,
+		ImageRef:              cfg.ImageRef,
+		PreviewBaseURL:        cfg.PreviewBaseURL,
+		MemoryLimit:           cfg.ContainerMemory,
+		CPULimit:              cfg.ContainerCPUs,
+		AnthropicAPIKey:       apiKey,
+		ClaudeCredentialsPath: credsPath,
+		ReadinessTimeout:      time.Duration(cfg.ReadinessTimeoutSec) * time.Second,
+		ReadinessInterval:     time.Duration(cfg.ReadinessIntervalMS) * time.Millisecond,
+		Log:                   log,
 	}
 	log.Info("provisioner", "kind", "podman",
-		"image", cfg.ImageRef, "site_template", siteTemplateDir, "branches", branchesDir)
+		"image", cfg.ImageRef, "site_template", siteTemplateDir, "branches", branchesDir,
+		"claude_creds", credsPath)
 	return pp
+}
+
+// resolveClaudeCredentialsPath maps the config field to a final path.
+//   - "-"  → disabled (return "")
+//   - ""   → auto-default to $HOME/.claude/.credentials.json
+//   - else → used verbatim
+// The provisioner re-probes existence on each Provision/EnsureRunning, so a
+// non-existent default here doesn't block startup.
+func resolveClaudeCredentialsPath(configured string, log *slog.Logger) string {
+	if configured == "-" {
+		return ""
+	}
+	if configured != "" {
+		return configured
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Warn("user home dir unavailable; claude credentials auto-mount disabled", "err", err)
+		return ""
+	}
+	return filepath.Join(home, ".claude", ".credentials.json")
 }
 
 // newStubWithAllocator wires a StubProvisioner against a pre-built (and

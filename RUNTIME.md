@@ -74,6 +74,14 @@ short-rev as `org.opencontainers.image.revision`.
 - **`$ANTHROPIC_API_KEY`** is expanded at startup via `config.ExpandSecret`
   (matches nous's pattern). Missing → empty → sandbox API calls fail until
   set. Log warns at startup.
+- **Claude Code OAuth (preferred when available).** If
+  `$HOME/.claude/.credentials.json` exists at provision time, the
+  orchestrator bind-mounts it read-only into the sandbox at
+  `/root/.claude/.credentials.json`. Nous-in-sandbox then uses the OAuth
+  chain (`auth.LoadClaudeCodeToken`) and inherits host token refreshes for
+  free — Claude Code on the host refreshes the file, the next sandbox
+  read picks it up. Override the path or disable with
+  `"claude_credentials_path": "/some/path"` (use `"-"` to disable).
 - **`idle_after_minutes`** (default `30`) and **`gc_interval_seconds`**
   (default `60`) match mvp.md §16. Set negative to disable GC entirely
   (tests + debugging).

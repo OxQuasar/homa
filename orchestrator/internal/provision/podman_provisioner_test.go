@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -57,10 +58,12 @@ type fakeSandbox struct {
 	ensureErr error
 	stopErr   error
 	running   bool
+	lastSpec  sandbox.Spec // captured for assertion in mount tests
 }
 
-func (f *fakeSandbox) Ensure(_ context.Context, _ sandbox.Spec) error {
+func (f *fakeSandbox) Ensure(_ context.Context, spec sandbox.Spec) error {
 	f.log.add("sandbox.Ensure")
+	f.lastSpec = spec
 	return f.ensureErr
 }
 func (f *fakeSandbox) Stop(_ context.Context, _ string) error {
@@ -241,6 +244,77 @@ func TestProvisionEmptyUserID(t *testing.T) {
 	}
 	if len(cl.snapshot()) != 0 {
 		t.Errorf("expected no calls, got %v", cl.snapshot())
+	}
+}
+
+// TestProvisionClaudeCredsMountWhenFileExists — when ClaudeCredentialsPath
+// points at an existing file, the bind mount appears on the Spec passed to
+// Sandbox.Ensure. Missing file → no mount; empty path → no mount.
+func TestProvisionClaudeCredsMount(t *testing.T) {
+	dir := t.TempDir()
+	existing := dir + "/.credentials.json"
+	if err := os.WriteFile(existing, []byte(`{"claudeAiOauth":{"accessToken":"x"}}`), 0o600); err != nil {
+		t.Fatalf("seed creds: %v", err)
+	}
+	missing := dir + "/does-not-exist.json"
+
+	cases := []struct {
+		name      string
+		credsPath string
+		wantMount bool
+	}{
+		{"empty path → no mount", "", false},
+		{"missing file → no mount", missing, false},
+		{"existing file → ro mount", existing, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pp, _, _, sb, _ := newRig(t)
+			pp.ClaudeCredentialsPath = tc.credsPath
+			if _, err := pp.Provision(context.Background(), "abcd1234"); err != nil {
+				t.Fatalf("Provision: %v", err)
+			}
+			gotMounts := sb.lastSpec.Mounts
+			if tc.wantMount {
+				if len(gotMounts) != 1 {
+					t.Fatalf("mounts: got %v, want 1", gotMounts)
+				}
+				m := gotMounts[0]
+				if m.Src != tc.credsPath {
+					t.Errorf("Src: got %q, want %q", m.Src, tc.credsPath)
+				}
+				if m.Dst != "/root/.claude/.credentials.json" {
+					t.Errorf("Dst: got %q", m.Dst)
+				}
+				if !m.ReadOnly {
+					t.Error("ReadOnly: got false, want true")
+				}
+			} else {
+				if len(gotMounts) != 0 {
+					t.Errorf("mounts: got %v, want none", gotMounts)
+				}
+			}
+		})
+	}
+}
+
+// TestEnsureRunningClaudeCredsMount — same mount semantics on the recovery
+// path. EnsureRunning is what kicks in after idle-GC, so this is where the
+// "host refresh visible to respawned sandbox" benefit actually applies.
+func TestEnsureRunningClaudeCredsMount(t *testing.T) {
+	dir := t.TempDir()
+	existing := dir + "/.credentials.json"
+	if err := os.WriteFile(existing, []byte(`{"claudeAiOauth":{"accessToken":"x"}}`), 0o600); err != nil {
+		t.Fatalf("seed creds: %v", err)
+	}
+	pp, _, _, sb, _ := newRig(t)
+	pp.ClaudeCredentialsPath = existing
+	pp.Users = &fakeUserLookup{users: map[string]*store.User{"abcd1234": sampleUser()}}
+	if err := pp.EnsureRunning(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("EnsureRunning: %v", err)
+	}
+	if len(sb.lastSpec.Mounts) != 1 || sb.lastSpec.Mounts[0].Src != existing {
+		t.Errorf("EnsureRunning mounts: got %+v, want one with Src=%s", sb.lastSpec.Mounts, existing)
 	}
 }
 

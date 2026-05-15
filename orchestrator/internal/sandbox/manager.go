@@ -13,6 +13,17 @@ type Spec struct {
 	MemoryLimit   string            // e.g. "2g"
 	CPULimit      string            // e.g. "2"
 	Env           map[string]string // injected into the container, e.g. ANTHROPIC_API_KEY
+	Mounts        []Mount           // extra bind mounts beyond the workspace; emitted in slice order
+}
+
+// Mount is a single host→container bind mount appended to `podman run`.
+// Use Mounts on Spec rather than baking these into the Containerfile so the
+// orchestrator can control per-sandbox visibility (e.g. the host's
+// Claude Code credentials file, read-only).
+type Mount struct {
+	Src      string // absolute host path
+	Dst      string // absolute container path
+	ReadOnly bool   // emits `:ro` suffix on the volume flag
 }
 
 // Manager owns the lifecycle of per-user sandbox containers.

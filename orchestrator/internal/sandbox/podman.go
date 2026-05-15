@@ -62,17 +62,33 @@ func buildRunArgs(spec Spec) []string {
 		"run", "-d", "--rm",
 		"--name", spec.ContainerName,
 		"-v", spec.WorktreePath + ":" + flagWorkspaceMount,
+	}
+	// Extra mounts in slice order — caller controls ordering. Emitted before
+	// ports/limits so the workspace mount stays adjacent to its kin in
+	// `podman inspect` output.
+	for _, m := range spec.Mounts {
+		args = append(args, "-v", formatMount(m))
+	}
+	args = append(args,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.NousPort, flagNousContainerPort),
 		"-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.PreviewPort, flagPreviewContainerPort),
-		"--memory=" + spec.MemoryLimit,
-		"--cpus=" + spec.CPULimit,
-	}
+		"--memory="+spec.MemoryLimit,
+		"--cpus="+spec.CPULimit,
+	)
 	// Env vars in stable iteration order so tests can assert exact argv.
 	for _, k := range sortedKeys(spec.Env) {
 		args = append(args, "-e", k+"="+spec.Env[k])
 	}
 	args = append(args, spec.ImageRef)
 	return args
+}
+
+// formatMount renders a Mount as the `src:dst[:ro]` form expected by `-v`.
+func formatMount(m Mount) string {
+	if m.ReadOnly {
+		return m.Src + ":" + m.Dst + ":ro"
+	}
+	return m.Src + ":" + m.Dst
 }
 
 // IsRunning queries `podman inspect`. Returns (false, nil) when the

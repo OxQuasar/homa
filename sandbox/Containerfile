@@ -20,6 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 
+# /root/.claude is the bind-mount target for the host's Claude Code
+# credentials file (mounted read-only by the orchestrator when configured).
+# Created here so the mount has a parent dir even on fresh containers.
+RUN mkdir -p /root/.claude
+
 COPY nous /usr/local/bin/nous
 COPY nous.config.json /etc/homa/nous.config.json
 COPY entrypoint.sh /entrypoint.sh

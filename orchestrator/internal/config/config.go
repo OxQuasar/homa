@@ -98,6 +98,14 @@ type Config struct {
 	// via config.ExpandSecret (see cmd/homa/main.go).
 	AnthropicAPIKey string `json:"anthropic_api_key"`
 
+	// ClaudeCredentialsPath is an absolute host path to a Claude Code
+	// `.credentials.json`. Empty (default) → main.go resolves to
+	// `$HOME/.claude/.credentials.json`. When the file exists at
+	// provision time the orchestrator bind-mounts it read-only into the
+	// sandbox so nous-in-sandbox uses the OAuth chain (and picks up host
+	// token refreshes for free). Set to "-" to disable explicitly.
+	ClaudeCredentialsPath string `json:"claude_credentials_path"`
+
 	// IdleAfterMinutes is the inactivity window before GC stops a user's
 	// sandbox (mvp.md §16). Unset / 0 in JSON → default 30 (applyDefaults
 	// can't distinguish "field missing" from "zero" in plain ints).

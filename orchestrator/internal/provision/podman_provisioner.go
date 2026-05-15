@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -49,10 +50,22 @@ type PodmanProvisioner struct {
 	MemoryLimit       string
 	CPULimit          string
 	AnthropicAPIKey   string // injected into the container as $ANTHROPIC_API_KEY
-	ReadinessTimeout  time.Duration
-	ReadinessInterval time.Duration
-	Log               *slog.Logger
+	// ClaudeCredentialsPath is an absolute host path to a Claude Code
+	// `.credentials.json`. When non-empty AND the file exists at
+	// Provision/EnsureRunning time, the file is bind-mounted read-only into
+	// the sandbox at /root/.claude/.credentials.json so nous-in-sandbox uses
+	// the OAuth chain (and inherits host token refreshes automatically).
+	// Empty / missing → fall back to env-var-only auth.
+	ClaudeCredentialsPath string
+	ReadinessTimeout      time.Duration
+	ReadinessInterval     time.Duration
+	Log                   *slog.Logger
 }
+
+// claudeCredsContainerPath is where the host's Claude Code credentials file
+// is mounted inside each sandbox. Matches the path nous's auth.LoadClaudeCodeToken
+// reads (~/.claude/.credentials.json with HOME=/root for the container's root user).
+const claudeCredsContainerPath = "/root/.claude/.credentials.json"
 
 // completedSteps records which side-effect steps succeeded so tear-down on
 // failure can roll back in the reverse order.
@@ -111,6 +124,7 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		MemoryLimit:   pp.MemoryLimit,
 		CPULimit:      pp.CPULimit,
 		Env:           map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey},
+		Mounts:        pp.claudeCredsMount(),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
 		return Result{}, pp.fail(ctx, steps, fmt.Errorf("provision: sandbox ensure: %w", err))
@@ -142,6 +156,30 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		result.PreviewURL = pp.PreviewBaseURL + ":" + strconv.Itoa(servePort)
 	}
 	return result, nil
+}
+
+// claudeCredsMount returns the bind-mount for the host's Claude Code
+// credentials file when configured and present, otherwise nil. Probed each
+// call so a file that appears mid-run (e.g. after the operator runs
+// `claude login`) becomes available to subsequent sandboxes without a
+// restart. Missing-file is informational, not an error — the env-var
+// fallback still works.
+func (pp *PodmanProvisioner) claudeCredsMount() []sandbox.Mount {
+	if pp.ClaudeCredentialsPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(pp.ClaudeCredentialsPath); err != nil {
+		if !os.IsNotExist(err) {
+			pp.Log.Warn("claude credentials stat failed",
+				"path", pp.ClaudeCredentialsPath, "err", err)
+		}
+		return nil
+	}
+	return []sandbox.Mount{{
+		Src:      pp.ClaudeCredentialsPath,
+		Dst:      claudeCredsContainerPath,
+		ReadOnly: true,
+	}}
 }
 
 // fail tears down completed steps in reverse order and returns rootErr
@@ -249,6 +287,7 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 		MemoryLimit:   pp.MemoryLimit,
 		CPULimit:      pp.CPULimit,
 		Env:           map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey},
+		Mounts:        pp.claudeCredsMount(),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
 		return fmt.Errorf("EnsureRunning: sandbox ensure %s: %w", u.ContainerName, err)

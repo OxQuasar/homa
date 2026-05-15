@@ -89,6 +89,46 @@ func TestEnsureSkipsIfRunning(t *testing.T) {
 	}
 }
 
+// TestEnsureEmitsMountsAfterWorkspace — Spec.Mounts append `-v src:dst[:ro]`
+// flags immediately after the workspace mount, before ports/limits, in
+// slice order. ":ro" suffix is included iff Mount.ReadOnly is true.
+func TestEnsureEmitsMountsAfterWorkspace(t *testing.T) {
+	fr := &runnertest.FakeRunner{
+		Responds: func(name string, args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return nil, runnertest.ExitError(name, 125, "no such container")
+			}
+			return []byte("container-id\n"), nil
+		},
+	}
+	spec := sampleSpec()
+	spec.Mounts = []sandbox.Mount{
+		{Src: "/host/.claude/.credentials.json", Dst: "/root/.claude/.credentials.json", ReadOnly: true},
+		{Src: "/host/data/extra", Dst: "/data/extra", ReadOnly: false},
+	}
+	pm := sandbox.NewPodmanManager("podman", fr)
+	if err := pm.Ensure(context.Background(), spec); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	runCall := fr.Calls()[1]
+	wantArgs := []string{
+		"run", "-d", "--rm",
+		"--name", "homa-user-abcd1234",
+		"-v", "/var/homa/branches/abcd1234:/workspace:Z",
+		"-v", "/host/.claude/.credentials.json:/root/.claude/.credentials.json:ro",
+		"-v", "/host/data/extra:/data/extra",
+		"-p", "127.0.0.1:40000:9000",
+		"-p", "127.0.0.1:40001:5173",
+		"--memory=2g",
+		"--cpus=2",
+		"-e", "ANTHROPIC_API_KEY=test-key",
+		"homa-sandbox:latest",
+	}
+	if !reflect.DeepEqual(runCall.Args, wantArgs) {
+		t.Errorf("run args:\n got  %v\n want %v", runCall.Args, wantArgs)
+	}
+}
+
 // TestIsRunningAbsentReturnsFalseNoErr — exit-status from `inspect` on a
 // missing container surfaces as `(false, nil)`.
 func TestIsRunningAbsentReturnsFalseNoErr(t *testing.T) {
