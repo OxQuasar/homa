@@ -30,6 +30,11 @@ export function openSession({ workDir, onEvent, onStatus }: OpenOptions): Sessio
     // First message MUST be the Hello so the daemon can spawn / attach a
     // session. Wire format is JSON per line (orchestrator proxy is opaque).
     ws.send(JSON.stringify({ work_dir: workDir }));
+    // Immediately request message history so the editor renders prior chat
+    // on reconnect. nous auto-emits messages_loaded only when reconnecting
+    // to a *live* (in-memory) session; for cold reconnects after logout it
+    // doesn't, so we always ask.
+    ws.send(JSON.stringify({ type: 'get_messages' }));
     setStatus('open');
   });
   ws.addEventListener('message', (e) => {

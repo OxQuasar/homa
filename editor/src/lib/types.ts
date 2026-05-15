@@ -1,5 +1,6 @@
 // Minimal shape of nous wire types used by the editor.
-// Source of truth: ~/nous/internal/director/event.go + gateway.go.
+// Source of truth: ~/nous/internal/director/event.go + gateway.go and
+// ~/nous/internal/message/message.go.
 
 export interface SessionSnapshot {
   id: string;
@@ -10,13 +11,58 @@ export interface SessionSnapshot {
   running?: boolean;
 }
 
+// --- Persisted message format (per ~/nous/internal/message/message.go) ---
+// Returned by nous in EventMessagesLoaded.messages so the editor can render
+// chat history on reconnect.
+
+export type Role = 'user' | 'assistant' | 'info';
+
+export type PartType =
+  | 'text'
+  | 'tool_call'
+  | 'tool_result'
+  | 'reasoning'
+  | 'server_tool_use'
+  | 'web_search_result';
+
+export interface Part {
+  type: PartType;
+  // The data shape depends on type; we narrow at the call site.
+  data: unknown;
+}
+
+export interface NousMessage {
+  id: string;
+  session_id: string;
+  role: Role;
+  parts: Part[];
+  model?: string;
+  created_at?: string;
+  is_summary?: boolean;
+}
+
+export interface TextData {
+  text: string;
+}
+export interface ToolCallData {
+  id: string;
+  name: string;
+  input: unknown; // raw JSON
+}
+export interface ToolResultData {
+  tool_call_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+// --- Wire events ---
+
 export type EventType =
   | 'session_state'
+  | 'messages_loaded'
   | 'text_delta'
-  | 'reasoning_delta'
   | 'tool_start'
   | 'tool_done'
-  | 'turn_done'
   | 'run_done'
   | 'prompt_queued'
   | 'permission_request';
@@ -24,6 +70,8 @@ export type EventType =
 export interface Event {
   type: EventType;
   session_state?: SessionSnapshot;
+  messages?: NousMessage[];
+  reconnected?: boolean;
   delta?: string;
   tool_name?: string;
   tool_input?: string;
@@ -33,22 +81,23 @@ export interface Event {
   err_str?: string;
 }
 
-export type RequestType =
-  | 'run'
-  | 'stop'
-  | 'new_session'
-  | 'switch_session';
+// --- Wire requests ---
+
+export type RequestType = 'run' | 'stop' | 'get_messages';
 
 export interface Request {
   type: RequestType;
   prompt?: string;
-  session_id?: string;
 }
+
+// --- Editor view model ---
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
-  // Tool calls captured while assistant message was streaming.
+  // Tool calls captured while assistant message was streaming, or rehydrated
+  // from history. `output` is filled in when the matching tool_result is
+  // seen (later in the same or a following message).
   tools?: ToolCall[];
 }
 

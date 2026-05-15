@@ -3,6 +3,7 @@
   import { me, logout } from '../lib/api';
   import { openSession, type Session } from '../lib/ws';
   import type { ChatMessage, Event as NousEvent, Streaming, ToolCall } from '../lib/types';
+  import { hydrateMessages } from '../lib/history';
   import Chat from '../lib/Chat.svelte';
 
   // Spec: §11 state shape.
@@ -43,6 +44,14 @@
         if (ev.session_state?.directory) workDir = ev.session_state.directory;
         break;
 
+      case 'messages_loaded':
+        // Hydrate chat from persisted history. Replaces whatever's in
+        // session.messages — nous's view of the session is authoritative.
+        // Drops any in-flight streaming buffer for the same reason.
+        session.messages = hydrateMessages(ev.messages);
+        session.streaming = null;
+        break;
+
       case 'text_delta':
         if (!session.streaming) session.streaming = { text: '', tools: [] };
         session.streaming.text += ev.delta ?? '';
@@ -72,10 +81,11 @@
         break;
       }
 
-      case 'turn_done':
       case 'run_done':
+        // End of a full multi-step run. Flush any in-flight streaming
+        // bubble into messages and return to idle.
         flushStreaming();
-        if (ev.type === 'run_done') session.status = 'idle';
+        session.status = 'idle';
         break;
     }
   }
