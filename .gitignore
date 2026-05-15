@@ -1,0 +1,34 @@
+# Per-user state — not in version control
+/branches/
+/data/
+
+# Go
+*.exe
+*.test
+*.out
+/orchestrator/bin/
+/orchestrator/homa
+
+# Node / Vite
+**/node_modules/
+**/dist/
+**/.svelte-kit/
+**/build/
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# SQLite scratch
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Local config
+config.local.json
+.env
+.env.local
