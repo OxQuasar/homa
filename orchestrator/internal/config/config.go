@@ -22,7 +22,14 @@ const (
 	defaultGitBin               = "git"
 	defaultContainerMemory      = "2g"
 	defaultContainerCPUs        = "2"
-	defaultReadinessTimeoutSec  = 30
+	// 30s was too tight for first-run signups: an empty worktree triggers
+	// `npm install` inside the container (≈30–60s depending on network +
+	// disk). Subsequent EnsureRunning calls reuse node_modules from the
+	// persisted worktree and finish in seconds, so this only stretches the
+	// first signup. 120s gives plenty of headroom without making real
+	// readiness failures (vite crash, port collision) take too long to
+	// surface.
+	defaultReadinessTimeoutSec  = 120
 	defaultReadinessIntervalMS  = 500
 	defaultIdleAfterMinutes     = 30 // mvp.md §16
 	defaultGCIntervalSeconds    = 60 // mvp.md §16
