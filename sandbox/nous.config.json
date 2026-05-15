@@ -2,7 +2,6 @@
   "default_provider": "anthropic",
   "providers": {
     "anthropic": {
-      "api_key": "$ANTHROPIC_API_KEY",
       "default_model": "claude-opus-4-7",
       "small_model": "claude-haiku-4-5-20251001",
       "compaction_model": "claude-haiku-4-5-20251001",
