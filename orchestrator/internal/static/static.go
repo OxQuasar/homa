@@ -56,8 +56,25 @@ func Register(mux *http.ServeMux, authSvc *auth.Service, log *slog.Logger) error
 			http.Error(w, "spa missing", http.StatusInternalServerError)
 			return
 		}
+		// Critical: never cache index.html. It carries the hashed asset
+		// URLs (e.g. /assets/index-<hash>.js); if a browser caches index
+		// across a new build, it'll keep loading the OLD bundle and miss
+		// any UI-level fixes. The hashed assets themselves are immutable
+		// by name so they can be cached aggressively below.
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(b)
+	}
+
+	// Assets are content-hashed by Vite — `index-<hash>.js`. Tell browsers
+	// they're immutable; a new build produces a new filename and a new
+	// fetch via the un-cached index.html.
+	assetCacheWrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			next.ServeHTTP(w, r)
+		})
 	}
 
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +95,7 @@ func Register(mux *http.ServeMux, authSvc *auth.Service, log *slog.Logger) error
 	mux.HandleFunc("GET /login", indexHandler)
 	mux.HandleFunc("GET /editor", indexHandler)
 
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsFS))))
+	mux.Handle("GET /assets/", assetCacheWrap(http.StripPrefix("/assets/", http.FileServer(http.FS(assetsFS)))))
 
 	return nil
 }
