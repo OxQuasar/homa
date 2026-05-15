@@ -139,10 +139,17 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 
 	prov, err := s.prov.Provision(r.Context(), userID)
 	if err != nil {
-		s.log.Error("provision failed", "err", err, "user_id", userID)
-		writeError(w, http.StatusInternalServerError, "provisioning failed")
+		// Error is already logged with full context (user_id, stage, etc.)
+		// by the provisioner. Surface the chain to the HTTP client too —
+		// this is a single-tenant tool, no info-leak concern, and curl /
+		// browser without server-log access becomes debuggable.
+		s.log.Error("signup: provision failed", "user_id", userID, "err", err)
+		writeError(w, http.StatusInternalServerError, "provisioning failed: "+err.Error())
 		return
 	}
+	s.log.Info("signup: provisioned",
+		"user_id", userID, "email", req.Email,
+		"container", prov.ContainerName, "preview_url", prov.PreviewURL)
 
 	now := time.Now().UTC().Unix()
 	u := store.User{

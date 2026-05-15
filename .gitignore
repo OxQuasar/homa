@@ -32,7 +32,9 @@
 *.db-wal
 *.db-shm
 
-# Local config
+# Local config + built binaries at repo root
+/config.json
+/homa
 config.local.json
 .env
 .env.local

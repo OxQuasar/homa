@@ -81,6 +81,11 @@ type completedSteps struct {
 
 // Provision walks the §9 flow. On any error, runs reverse-order cleanup and
 // returns the underlying error (wrapped with `%w`).
+//
+// Per-stage Info logs use the same `stage=` key so a grep on a failed
+// signup is one-liner: `journalctl -u homa | grep stage=`. user_id /
+// container_name / ports are pinned via slog.With at the top so every
+// subsequent line in this Provision call carries them.
 func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Result, error) {
 	if userID == "" {
 		return Result{}, fmt.Errorf("provision: empty userID")
@@ -101,6 +106,16 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	worktreePath := filepath.Join(pp.BranchesDir, userID)
 	containerName := containerNamePrefix + userID
 
+	log := pp.Log.With(
+		"user_id", userID,
+		"container", containerName,
+		"nous_port", nousPort,
+		"preview_port", previewPort,
+		"serve_port", servePort,
+	)
+	log.Info("provision: start")
+	startedAt := time.Now().UTC()
+
 	steps := &completedSteps{
 		worktreePath:  worktreePath,
 		containerName: containerName,
@@ -109,12 +124,14 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	}
 
 	// 1. git worktree add
+	log.Info("provision: stage", "stage", "worktree_create", "repo", pp.SiteTemplateDir, "branch", branchName)
 	if err := pp.Worktree.Create(ctx, pp.SiteTemplateDir, branchName, worktreePath); err != nil {
-		return Result{}, pp.fail(ctx, steps, fmt.Errorf("provision: worktree create: %w", err))
+		return Result{}, pp.fail(ctx, log, steps, fmt.Errorf("provision: worktree create: %w", err))
 	}
 	steps.worktreeCreated = true
 
 	// 2. podman run
+	log.Info("provision: stage", "stage", "sandbox_ensure", "image", pp.ImageRef)
 	spec := sandbox.Spec{
 		ContainerName: containerName,
 		ImageRef:      pp.ImageRef,
@@ -127,22 +144,26 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		Mounts:        pp.claudeCredsMount(),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
-		return Result{}, pp.fail(ctx, steps, fmt.Errorf("provision: sandbox ensure: %w", err))
+		return Result{}, pp.fail(ctx, log, steps, fmt.Errorf("provision: sandbox ensure: %w", err))
 	}
 	steps.sandboxStarted = true
 
 	// 3. wait for the Vite dev server inside the container to answer.
+	log.Info("provision: stage", "stage", "readiness_probe", "timeout", pp.ReadinessTimeout)
 	previewURL := fmt.Sprintf("http://127.0.0.1:%d/", previewPort)
 	if err := waitReady(ctx, probe, previewURL, pp.ReadinessTimeout, pp.ReadinessInterval); err != nil {
-		return Result{}, pp.fail(ctx, steps, fmt.Errorf("provision: readiness: %w", err))
+		return Result{}, pp.fail(ctx, log, steps, fmt.Errorf("provision: readiness: %w", err))
 	}
 
 	// 4. tailscale serve --bg --https=<port> http://localhost:<previewPort>
+	log.Info("provision: stage", "stage", "tsserve_register", "serve_port", servePort)
 	target := fmt.Sprintf("http://localhost:%d", previewPort)
 	if err := pp.TSServe.Register(ctx, servePort, target); err != nil {
-		return Result{}, pp.fail(ctx, steps, fmt.Errorf("provision: tsserve register: %w", err))
+		return Result{}, pp.fail(ctx, log, steps, fmt.Errorf("provision: tsserve register: %w", err))
 	}
 	steps.tsserveRegistered = true
+
+	log.Info("provision: done", "elapsed", time.Since(startedAt).Round(time.Millisecond))
 
 	result := Result{
 		BranchName:       branchName,
@@ -182,22 +203,48 @@ func (pp *PodmanProvisioner) claudeCredsMount() []sandbox.Mount {
 	}}
 }
 
+// failedTeardownLogLines bounds how many lines of container stdout/stderr to
+// dump on a failed provision. Enough to see an npm install error or a vite
+// startup trace without flooding the orchestrator log.
+const failedTeardownLogLines = 50
+
 // fail tears down completed steps in reverse order and returns rootErr
-// unchanged (so callers can errors.Is on the root cause).
-func (pp *PodmanProvisioner) fail(ctx context.Context, steps *completedSteps, rootErr error) error {
+// unchanged (so callers can errors.Is on the root cause). When the sandbox
+// step had progressed, captures the container's logs BEFORE stopping it
+// (--rm removes the container on stop, so logs vanish after).
+func (pp *PodmanProvisioner) fail(ctx context.Context, log *slog.Logger, steps *completedSteps, rootErr error) error {
+	log.Error("provision: failed", "err", rootErr)
+
+	// Capture container logs first, while there's still a container to query.
+	if steps.sandboxStarted {
+		lines, err := pp.Sandbox.Logs(ctx, steps.containerName, failedTeardownLogLines)
+		switch {
+		case err != nil:
+			log.Warn("teardown: container logs unavailable", "err", err)
+		case len(lines) == 0:
+			log.Warn("teardown: container produced no logs")
+		default:
+			log.Warn("teardown: container logs follow",
+				"name", steps.containerName, "lines", len(lines))
+			for _, line := range lines {
+				log.Warn("container:" + " " + line)
+			}
+		}
+	}
+
 	if steps.tsserveRegistered {
 		if err := pp.TSServe.Unregister(ctx, steps.servePort); err != nil {
-			pp.Log.Warn("teardown: tsserve unregister failed", "port", steps.servePort, "err", err)
+			log.Warn("teardown: tsserve unregister failed", "port", steps.servePort, "err", err)
 		}
 	}
 	if steps.sandboxStarted {
 		if err := pp.Sandbox.Stop(ctx, steps.containerName); err != nil {
-			pp.Log.Warn("teardown: sandbox stop failed", "name", steps.containerName, "err", err)
+			log.Warn("teardown: sandbox stop failed", "name", steps.containerName, "err", err)
 		}
 	}
 	if steps.worktreeCreated {
 		if err := pp.Worktree.Remove(ctx, steps.repoDir, steps.worktreePath); err != nil {
-			pp.Log.Warn("teardown: worktree remove failed", "path", steps.worktreePath, "err", err)
+			log.Warn("teardown: worktree remove failed", "path", steps.worktreePath, "err", err)
 		}
 	}
 	return rootErr
@@ -273,11 +320,23 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 		return fmt.Errorf("EnsureRunning: load user %s: %w", userID, err)
 	}
 
+	log := pp.Log.With(
+		"user_id", userID,
+		"container", u.ContainerName,
+		"nous_port", u.NousPort,
+		"preview_port", u.PreviewPort,
+		"serve_port", u.PreviewServePort,
+		"op", "ensure_running",
+	)
+	log.Info("ensure: start")
+	startedAt := time.Now().UTC()
+
 	probe := pp.Probe
 	if probe == nil {
 		probe = HTTPProbe
 	}
 
+	log.Info("ensure: stage", "stage", "sandbox_ensure")
 	spec := sandbox.Spec{
 		ContainerName: u.ContainerName,
 		ImageRef:      pp.ImageRef,
@@ -290,30 +349,44 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 		Mounts:        pp.claudeCredsMount(),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
+		log.Error("ensure: failed", "stage", "sandbox_ensure", "err", err)
 		return fmt.Errorf("EnsureRunning: sandbox ensure %s: %w", u.ContainerName, err)
 	}
 
 	// Wait for the dev server before re-registering tsserve, otherwise a
 	// browser hitting the preview URL right after login can race the boot.
+	log.Info("ensure: stage", "stage", "readiness_probe", "timeout", pp.ReadinessTimeout)
 	previewURL := fmt.Sprintf("http://127.0.0.1:%d/", u.PreviewPort)
 	if err := waitReady(ctx, probe, previewURL, pp.ReadinessTimeout, pp.ReadinessInterval); err != nil {
+		log.Error("ensure: failed", "stage", "readiness_probe", "err", err)
+		// Container is alive but unresponsive — dump recent logs so we can
+		// see why vite/nous didn't come up. Don't tear down; EnsureRunning
+		// is non-fatal at the caller layer and the user may want to retry.
+		if lines, lerr := pp.Sandbox.Logs(ctx, u.ContainerName, failedTeardownLogLines); lerr == nil {
+			for _, line := range lines {
+				log.Warn("container: " + line)
+			}
+		}
 		return fmt.Errorf("EnsureRunning: readiness: %w", err)
 	}
 
 	// Re-register tsserve if missing (e.g. tailscale was restarted on the
 	// host). IsRegistered failure → assume not registered and try anyway.
+	log.Info("ensure: stage", "stage", "tsserve_check")
 	registered, err := pp.TSServe.IsRegistered(ctx, u.PreviewServePort)
 	if err != nil {
-		pp.Log.Warn("EnsureRunning: tsserve IsRegistered failed; will re-register",
-			"user_id", userID, "err", err)
+		log.Warn("ensure: tsserve IsRegistered failed; will re-register", "err", err)
 		registered = false
 	}
 	if !registered {
+		log.Info("ensure: stage", "stage", "tsserve_register")
 		target := fmt.Sprintf("http://localhost:%d", u.PreviewPort)
 		if err := pp.TSServe.Register(ctx, u.PreviewServePort, target); err != nil {
+			log.Error("ensure: failed", "stage", "tsserve_register", "err", err)
 			return fmt.Errorf("EnsureRunning: tsserve register: %w", err)
 		}
 	}
+	log.Info("ensure: done", "elapsed", time.Since(startedAt).Round(time.Millisecond))
 	return nil
 }
 

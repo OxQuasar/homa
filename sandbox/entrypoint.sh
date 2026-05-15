@@ -2,8 +2,11 @@
 # Per-user sandbox entrypoint.
 #
 # Boot order:
-#   1. Validate ANTHROPIC_API_KEY is present (fail fast — nous would die at
-#      first LLM call anyway, but with a less obvious message).
+#   1. Validate that *some* Anthropic auth is reachable — either
+#      ANTHROPIC_API_KEY env var OR a non-empty Claude OAuth credentials
+#      file bind-mounted at /root/.claude/.credentials.json. Either is
+#      sufficient; nous's resolveAuth chain prefers the OAuth file when
+#      present.
 #   2. Seed /workspace/.nous/config.json from the baked YOLO template if the
 #      worktree doesn't already carry one. -n leaves any user-supplied
 #      config in place across container restarts.
@@ -16,9 +19,10 @@
 
 set -euo pipefail
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  echo "homa-sandbox: ANTHROPIC_API_KEY is unset — refusing to start." >&2
-  echo "Pass it with: podman run -e ANTHROPIC_API_KEY=... ..." >&2
+# Auth precondition: either env var or a usable OAuth credentials file.
+if [[ -z "${ANTHROPIC_API_KEY:-}" && ! -s /root/.claude/.credentials.json ]]; then
+  echo "homa-sandbox: no Anthropic auth available — set ANTHROPIC_API_KEY or" >&2
+  echo "  mount a non-empty .credentials.json at /root/.claude/.credentials.json." >&2
   exit 1
 fi
 
