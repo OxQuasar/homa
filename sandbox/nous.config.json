@@ -1,0 +1,16 @@
+{
+  "default_provider": "anthropic",
+  "providers": {
+    "anthropic": {
+      "api_key": "$ANTHROPIC_API_KEY",
+      "default_model": "claude-opus-4-7",
+      "small_model": "claude-haiku-4-5-20251001",
+      "compaction_model": "claude-haiku-4-5-20251001",
+      "effort": "high",
+      "thinking": "adaptive",
+      "thinking_display": "summarized"
+    }
+  },
+  "permissions": { "yolo": true },
+  "transport": { "ws_listen": "0.0.0.0:9000" }
+}

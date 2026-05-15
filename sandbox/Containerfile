@@ -1,0 +1,30 @@
+# Per-user sandbox image (mvp.md §8).
+#
+# Contents:
+#   - Node 22 (slim) for the SvelteKit dev server
+#   - git + ca-certificates + curl (template clone / health checks)
+#   - nous binary (CGO-disabled; built externally and copied)
+#   - YOLO nous config (env-var-resolved at daemon startup)
+#   - entrypoint that starts vite in background + nous daemon in foreground
+#
+# Build via ../sandbox/build.sh which sets NOUS_REV.
+
+FROM node:22-bookworm-slim
+
+ARG NOUS_REV=unknown
+LABEL org.opencontainers.image.revision="${NOUS_REV}"
+LABEL org.opencontainers.image.source="https://github.com/skipper/homa"
+LABEL org.opencontainers.image.title="homa-sandbox"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY nous /usr/local/bin/nous
+COPY nous.config.json /etc/homa/nous.config.json
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/nous
+
+WORKDIR /workspace
+EXPOSE 9000 5173
+ENTRYPOINT ["/entrypoint.sh"]

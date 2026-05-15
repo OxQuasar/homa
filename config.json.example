@@ -1,0 +1,7 @@
+{
+  "listen_addr": ":8080",
+  "data_dir": "data",
+  "branches_dir": "branches",
+  "cookie_secure": true,
+  "preview_base_url": "https://homa.tailnet.ts.net"
+}

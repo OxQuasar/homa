@@ -8,13 +8,17 @@
 *.out
 /orchestrator/bin/
 /orchestrator/homa
+/sandbox/probe/probe
 
 # Node / Vite
 **/node_modules/
-**/dist/
+/editor/dist/
 **/.svelte-kit/
 **/build/
 *.log
+
+# Note: orchestrator/internal/static/dist/ IS committed — go:embed needs it
+# at compile time. Rebuild via ~/homa/editor/build.sh.
 
 # Editor / IDE
 .vscode/
