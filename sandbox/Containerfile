@@ -26,6 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN mkdir -p /root/.claude
 
 COPY nous /usr/local/bin/nous
+# nous looks for config.json at nousDir (= dir of the binary) or cwd; placing
+# it next to the binary lets every sandbox launch find it without writing
+# into the user's worktree. /etc/homa keeps a reference copy for grep-ability.
+COPY nous.config.json /usr/local/bin/config.json
 COPY nous.config.json /etc/homa/nous.config.json
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/nous
