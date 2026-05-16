@@ -96,7 +96,8 @@ func TestEnsureEmitsMainflavorArgv(t *testing.T) {
 	}
 	runCall := fr.Calls()[1]
 	wantArgs := []string{
-		"run", "-d", // no "--rm"
+		"run", "-d", "--replace", // no "--rm" (NoAutoRemove); --replace so a
+		// stopped corpse of the same name doesn't block respawn.
 		"--name", "homa-main",
 		"-v", "/srv/homa/site-template:/workspace:Z",
 		// no nous port mapping (NousPort=0)

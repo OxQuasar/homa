@@ -59,12 +59,16 @@ func (pm *PodmanManager) Ensure(ctx context.Context, spec Spec) error {
 // slice directly.
 //
 // Flags vary by spec:
-//   - NousPort > 0   → emit `-p` for nous; 0 skips (main sandbox uses 0).
-//   - !NoAutoRemove  → emit `--rm`; the inverse leaves crashed containers
-//                      inspectable (main sandbox sets NoAutoRemove=true).
+//   - NousPort > 0  → emit `-p` for nous; 0 skips (main sandbox uses 0).
+//   - !NoAutoRemove → emit `--rm`; the inverse leaves crashed containers
+//                     inspectable AND emits `--replace` instead so a
+//                     stopped corpse of the same name doesn't block restart
+//                     (matters for the mainsite watchdog respawn path).
 func buildRunArgs(spec Spec) []string {
 	args := []string{"run", "-d"}
-	if !spec.NoAutoRemove {
+	if spec.NoAutoRemove {
+		args = append(args, "--replace") // rm-and-recreate if stopped corpse exists
+	} else {
 		args = append(args, "--rm")
 	}
 	args = append(args,
