@@ -7,19 +7,186 @@ Multi-user LLM-driven website builder. Each user signs up, gets a sandboxed envi
 - **Spec (executable):** [`~/nous/memories/homa/mvp.md`](../nous/memories/homa/mvp.md)
 - **Design rationale:** [`~/nous/memories/homa/homa.md`](../nous/memories/homa/homa.md)
 - **Build workflow:** `~/nous/logos/homa-build/LOGOS.yaml`
+- **Bring-up runbook:** [`RUNTIME.md`](./RUNTIME.md)
 
-## Layout (target — see `mvp.md` §4)
+## Layout
 
 ```
 ~/homa/
 ├── orchestrator/    Go service: auth, user store, sandbox mgr, reverse proxy
 ├── editor/          Vite + Svelte SPA (built static, served by orchestrator)
-├── sandbox/         Containerfile + entrypoint for per-user sandbox
-├── site-template/   `main` branch — SvelteKit scaffold users fork from
+├── sandbox/         Containerfile + entrypoint + nous.config.json template
+├── site-template/   `main` git branch — SvelteKit scaffold users fork from
 ├── branches/        Worktrees per user (gitignored)
-└── data/            SQLite, etc. (gitignored)
+├── data/            Runtime state (gitignored)
+│   ├── homa.db         SQLite — users + web_sessions
+│   └── configs/        Per-user nous configs (admin-controlled)
+│       └── <userid>/config.json
+├── scripts/         Live e2e shell scripts
+├── config.json      Orchestrator config (gitignored)
+└── homa             Built orchestrator binary (gitignored)
 ```
+
+Two podman objects per user, persistent across container restarts:
+- container `homa-user-<userid>` (ephemeral; recreated each spawn)
+- named volume `homa-user-<userid>-nous` (persistent; holds chat history)
+
+## Admin workflows
+
+All admin tasks are filesystem / shell on the host. There's no admin HTTP UI — this is single-operator by design.
+
+### Edit a user's nous config
+
+Each user has a per-user nous config bind-mounted read-only into their container at `/usr/local/bin/config.json`. The user's LLM can read it but cannot rewrite it. Only the host operator can change it.
+
+```bash
+# 1. Edit the user's config (seeded from sandbox/nous.config.json at signup)
+$EDITOR ~/homa/data/configs/<userid>/config.json
+
+# 2. Stop the user's container so it respawns from the edited config
+podman stop homa-user-<userid>
+
+# 3. Next time the user logs in (or hits /ws), EnsureRunning spawns a
+#    fresh container with the new config. Their chat history persists
+#    via the named volume.
+```
+
+**Common fields** (full schema lives in `~/nous/internal/config/config.go`):
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "default_model": "claude-opus-4-7",
+      "effort": "high",                    // "high" | "xhigh" | "max"
+      "thinking": "adaptive",              // "adaptive" | "enabled" | "off"
+      "web_search": "anthropic",           // empty disables
+      "web_search_max_uses": 10
+    }
+  },
+  "permissions": { "yolo": true },
+  "bash": {
+    "foreground_timeout": 5,
+    "background_timeout": 1180
+  }
+}
+```
+
+### Change the default config for new users
+
+Edits to `~/homa/data/configs/<userid>/config.json` affect one user. To change the **template** that future signups get seeded from:
+
+```bash
+# 1. Edit the template
+$EDITOR ~/homa/sandbox/nous.config.json
+
+# 2. Rebuild the sandbox image (the template is also baked here as the
+#    fallback when per-user configs are disabled)
+bash ~/homa/sandbox/build.sh
+
+# 3. Restart orchestrator if you want it to pick up the new template
+#    file (it's read on each provision so this is optional).
+```
+
+The template is the seed for *new* users only — existing users keep their current per-user config.
+
+### List / inspect users
+
+```bash
+sqlite3 ~/homa/data/homa.db 'select id, email, container_name,
+    nous_port, preview_port, preview_serve_port, nous_session_id,
+    datetime(created_at, "unixepoch"), datetime(last_active_at, "unixepoch")
+  from users'
+
+# Running containers
+podman ps --filter name=homa-user-
+
+# Per-user volumes (persistent)
+podman volume ls --filter name=homa-user-
+
+# Per-user nous configs on host
+ls ~/homa/data/configs/
+
+# Tailscale-serve mappings
+tailscale serve status
+```
+
+### Force a user's container to restart
+
+```bash
+podman stop homa-user-<userid>      # --rm removes it; volume preserved
+# User's next /login or /ws hits EnsureRunning → fresh container
+```
+
+### Delete a user (full teardown)
+
+No CLI yet; manual sequence:
+
+```bash
+ID=<userid>
+podman stop homa-user-$ID 2>/dev/null
+podman volume rm homa-user-$ID-nous 2>/dev/null      # destroys chat history
+tailscale serve --https=$(sqlite3 ~/homa/data/homa.db \
+    "select preview_serve_port from users where id='$ID'") off
+git -C ~/homa/site-template worktree remove --force ~/homa/branches/$ID
+git -C ~/homa/site-template branch -D user/$ID 2>/dev/null
+rm -rf ~/homa/data/configs/$ID
+sqlite3 ~/homa/data/homa.db \
+    "delete from web_sessions where user_id='$ID'; delete from users where id='$ID';"
+```
+
+### Backup
+
+Everything stateful lives under `~/homa/`. Cover:
+
+```
+~/homa/data/             # SQLite + per-user configs
+~/homa/branches/         # per-user worktrees (the actual sites)
+podman volume export …   # per-user chat history (one volume per user)
+```
+
+User identities + their sites + their conversations are independent files / volumes; you can back up any subset.
+
+### Tune the idle-GC cycle
+
+`~/homa/config.json`:
+
+```json
+{
+  "idle_after_minutes": 30,        // 0 → default 30; negative disables GC
+  "gc_interval_seconds": 60        // 0 → default 60; negative disables GC
+}
+```
+
+Restart orchestrator to apply. Lower values give faster cleanup during testing; production default keeps containers warm long enough that an editor reload after a coffee break doesn't pay the respawn cost.
+
+### Restart orchestrator
+
+```bash
+# Find + kill
+pkill -f "homa -config"
+
+# Or systemd-style if you've wrapped it
+systemctl --user restart homa.service
+
+# Foreground (default operator pattern):
+cd ~/homa && ./homa -config config.json
+```
+
+The orchestrator restart does **not** restart sandbox containers (they're managed independently by podman). Restart containers explicitly via `podman stop` when you need them to pick up image / config changes.
+
+### Rebuild the sandbox image
+
+When you change `~/homa/sandbox/Containerfile`, `entrypoint.sh`, or the nous source tree:
+
+```bash
+bash ~/homa/sandbox/build.sh
+# To force every running user onto the new image:
+podman stop $(podman ps -q --filter name=homa-user-)
+```
+
+The build script cross-compiles `~/nous` as a static linux/amd64 ELF and runs `podman build`. Existing containers keep running the old image until explicitly stopped.
 
 ## Status
 
-Empty. Build proceeds via the `homa-build` LOGOS workflow.
+MVP T1–T5 acceptance tests all pass with live verification. See `~/nous/memories/homa/progress.md` for build log.
