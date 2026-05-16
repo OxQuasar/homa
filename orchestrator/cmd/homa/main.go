@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -328,10 +329,15 @@ func maxInt(xs []int) int {
 // anything else so a typo can't fall through to a shell command.
 var userIDPattern = regexp.MustCompile(`^[a-f0-9]{8}$`)
 
-// runMerge implements `homa merge <userid>`: git merge --no-ff user/<id>
-// into main inside SiteTemplateDir. Admin-only; runs on the host with
-// the operator's git identity. Conflicts surface as git's own non-zero
-// exit + stderr — operator resolves by hand.
+// runMerge implements `homa merge <userid>`:
+//   1. Auto-commit uncommitted work in branches/<userid>/ (everything that
+//      `git status --porcelain` would show — modified, added, deleted,
+//      untracked). Author is the user's email from the DB; falls back to
+//      a synthetic homa-bot identity if the store lookup fails.
+//   2. git merge --no-ff user/<id> into main inside SiteTemplateDir.
+//
+// Admin-only; runs on the host. Conflicts on step 2 surface as git's own
+// non-zero exit + stderr — operator resolves by hand.
 func runMerge(args []string, log *slog.Logger) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: homa merge <userid>")
@@ -349,10 +355,36 @@ func runMerge(args []string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("abs site_template_dir: %w", err)
 	}
+	branchesDir, err := filepath.Abs(cfg.BranchesDir)
+	if err != nil {
+		return fmt.Errorf("abs branches_dir: %w", err)
+	}
+	worktreePath := filepath.Join(branchesDir, userID)
 
+	// Step 1: auto-commit. Best-effort store lookup for a real email;
+	// fall back to a synthetic identity so the merge still works if the
+	// DB is missing / locked / etc.
+	commitEmail := "homa-bot@homa.local"
+	commitName := "homa-bot (user " + userID + ")"
+	if st, err := store.Open(cfg.DBPath()); err == nil {
+		defer st.Close()
+		if u, lerr := st.GetUserByID(context.Background(), userID); lerr == nil {
+			commitEmail = u.Email
+			commitName = u.Email
+		} else {
+			log.Warn("merge: user lookup failed; using synthetic commit author",
+				"user_id", userID, "err", lerr)
+		}
+	} else {
+		log.Warn("merge: store unavailable; using synthetic commit author", "err", err)
+	}
+	if err := autoCommit(worktreePath, commitEmail, commitName, log); err != nil {
+		return fmt.Errorf("auto-commit: %w", err)
+	}
+
+	// Step 2: merge into main.
 	branch := "user/" + userID
 	log.Info("merge: starting", "branch", branch, "into", "main", "repo", siteDir)
-
 	cmd := exec.Command("git", "-C", siteDir, "merge", "--no-ff",
 		"-m", "homa: merge "+branch, branch)
 	cmd.Stdout = os.Stdout
@@ -361,5 +393,36 @@ func runMerge(args []string, log *slog.Logger) error {
 		return fmt.Errorf("git merge: %w (resolve conflicts in %s then retry)", err, siteDir)
 	}
 	log.Info("merge: success — mainsite vite will HMR to the new files")
+	return nil
+}
+
+// autoCommit stages and commits everything in the user's worktree if dirty.
+// No-op when worktree is clean. Commit author is supplied by the caller.
+func autoCommit(worktreePath, email, name string, log *slog.Logger) error {
+	statusOut, err := exec.Command("git", "-C", worktreePath, "status", "--porcelain").Output()
+	if err != nil {
+		return fmt.Errorf("git status in %s: %w", worktreePath, err)
+	}
+	if len(bytes.TrimSpace(statusOut)) == 0 {
+		log.Info("auto-commit: worktree clean", "path", worktreePath)
+		return nil
+	}
+
+	files := bytes.Count(statusOut, []byte("\n"))
+	log.Info("auto-commit: staging changes", "path", worktreePath, "files", files,
+		"author_email", email)
+
+	if err := exec.Command("git", "-C", worktreePath, "add", "-A").Run(); err != nil {
+		return fmt.Errorf("git add -A in %s: %w", worktreePath, err)
+	}
+	commit := exec.Command("git", "-C", worktreePath,
+		"-c", "user.email="+email,
+		"-c", "user.name="+name,
+		"commit", "-m", "homa: auto-commit before merge")
+	commit.Stdout = os.Stdout
+	commit.Stderr = os.Stderr
+	if err := commit.Run(); err != nil {
+		return fmt.Errorf("git commit in %s: %w", worktreePath, err)
+	}
 	return nil
 }
