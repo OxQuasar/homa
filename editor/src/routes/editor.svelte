@@ -120,6 +120,11 @@
     <div class="brand">homa</div>
     <div class="meta">
       <span class="email">{userEmail}</span>
+      {#if session.status === 'running'}
+        <span class="working" title="LLM is working" aria-live="polite">
+          <span class="working-dot"></span> working
+        </span>
+      {/if}
       <span class="status status-{wsStatus}">{wsStatus}</span>
       <button onclick={onLogout}>Log out</button>
     </div>
@@ -156,6 +161,26 @@
   .status-connecting { background: #fee; color: #b80; }
   .status-open { background: #efe; color: #060; }
   .status-closed { background: #fdd; color: #c00; }
+
+  /* "working" pulse — peripheral indicator visible even when the chat is
+     scrolled, so the user doesn't have to look at the message list to know
+     the LLM is doing something. */
+  .working {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.1rem 0.45rem; border-radius: 3px;
+    background: #fff7e0; color: #8a6a00;
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .working-dot {
+    width: 0.45rem; height: 0.45rem; border-radius: 50%;
+    background: #d99800;
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.85); }
+    50%      { opacity: 1;   transform: scale(1.05); }
+  }
+
   button { padding: 0.25rem 0.6rem; border: 1px solid #aaa; background: #fff; border-radius: 4px; cursor: pointer; }
   main { display: grid; grid-template-columns: minmax(340px, 1fr) 2fr; flex: 1; min-height: 0; }
   .chat-pane { border-right: 1px solid #ddd; display: flex; flex-direction: column; min-height: 0; }
