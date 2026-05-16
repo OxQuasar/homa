@@ -289,7 +289,12 @@
 
   async function onLogout() {
     try { await logout(); } catch { /* idempotent */ }
-    window.location.hash = '#/login';
+    // After logout, return the user to the public site (the main vite
+    // container serving '/'), not the editor's SPA login. The login
+    // pill on the public site remains for re-entry. Using assign+'/'
+    // rather than hash navigation so the orchestrator's proxy serves
+    // the mainsite handler, not the SPA's editor route.
+    window.location.assign('/');
   }
 </script>
 
