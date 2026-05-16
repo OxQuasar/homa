@@ -102,12 +102,9 @@ func TestCodeURL_HappyPath(t *testing.T) {
 	if got.URL == "" {
 		t.Fatal("URL empty")
 	}
-	// URL shape sanity (parsed properly + carries tkn + workspace).
+	// URL shape sanity (parsed properly + workspace as folder).
 	if !strings.Contains(got.URL, "homa.example.com:20001") {
 		t.Errorf("URL host:port wrong: %q", got.URL)
-	}
-	if !strings.Contains(got.URL, "tkn=") {
-		t.Errorf("URL missing tkn param: %q", got.URL)
 	}
 	if !strings.Contains(got.URL, "folder=%2Fworkspace") {
 		t.Errorf("URL missing folder param: %q", got.URL)

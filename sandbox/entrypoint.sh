@@ -56,15 +56,21 @@ fi
 # nous next. --strictPort keeps us deterministic — fail loud if 5173 is busy.
 (cd /workspace && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort) &
 
-# code-server in background — only when the orchestrator passed a per-user
-# password via HOMA_CODE_SERVER_PASSWORD. The PASSWORD env var is how
-# code-server's --auth password mode picks up its credential. Disable
-# telemetry + update-check so the container makes no surprise outbound
-# calls. Bind to 0.0.0.0:8443; orchestrator port-maps to 127.0.0.1.
+# code-server in background. Phase 1 security model: --auth none, with
+# tailscale-serve as the reachability gate. Only members of the operator's
+# tailnet can hit the per-user code-server port — same trust assumption
+# as the rest of homa today. Phase 2 of memories/homa/codeserver.md
+# replaces this with an orchestrator reverse-proxy that validates the
+# homa session cookie on every request.
+#
+# HOMA_CODE_SERVER_PASSWORD is still set by the orchestrator (gates
+# whether the feature is "on"); --auth password's URL-token shape isn't
+# supported in code-server v4.x, so we don't use it. The env var
+# presence is the signal to launch code-server at all.
 if [[ -n "${HOMA_CODE_SERVER_PASSWORD:-}" ]]; then
-  PASSWORD="$HOMA_CODE_SERVER_PASSWORD" code-server \
+  code-server \
     --bind-addr 0.0.0.0:8443 \
-    --auth password \
+    --auth none \
     --disable-telemetry \
     --disable-update-check \
     --user-data-dir /root/.local/share/code-server \

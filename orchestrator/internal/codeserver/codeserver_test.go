@@ -126,9 +126,9 @@ func TestPasswordFor_Shape(t *testing.T) {
 	}
 }
 
-// TestURLFor_Shape — builds the URL the editor opens. Verify host,
-// port, tkn, folder all show up correctly + folder is omitted when
-// empty.
+// TestURLFor_Shape — builds the URL the editor opens. Phase 1 omits
+// URL-based auth (code-server v4 doesn't support it); verify host,
+// port, folder show up correctly.
 func TestURLFor_Shape(t *testing.T) {
 	got := URLFor("gandiva.example.com", 20001, "pw-token", "/workspace")
 	u, err := url.Parse(got)
@@ -141,11 +141,13 @@ func TestURLFor_Shape(t *testing.T) {
 	if u.Host != "gandiva.example.com:20001" {
 		t.Errorf("host: got %q", u.Host)
 	}
-	if tkn := u.Query().Get("tkn"); tkn != "pw-token" {
-		t.Errorf("tkn: got %q", tkn)
-	}
 	if folder := u.Query().Get("folder"); folder != "/workspace" {
 		t.Errorf("folder: got %q", folder)
+	}
+	// Phase 1 invariant: password is NOT in the URL (deliberate — leaks
+	// in browser history, doesn't auto-auth in code-server v4 anyway).
+	if strings.Contains(got, "pw-token") {
+		t.Errorf("URL leaks password: %q", got)
 	}
 }
 

@@ -83,19 +83,27 @@ func PasswordFor(secret []byte, userID string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:passwordPrefix])
 }
 
-// URLFor builds the one-shot URL the editor opens. The `tkn` query
-// param prefills code-server's password field, so the user lands
-// inside VS Code instead of at the login screen.
+// URLFor builds the URL the editor opens. Code-server v4.x doesn't
+// support URL-token auto-login (the `tkn` param was a v3-era thing
+// and was removed for security — URL params leak in browser history
+// and referrer headers). Phase 1 instead runs code-server with
+// `--auth none` and relies on tailscale-serve membership as the
+// gate; the password argument is accepted but currently unused.
 //
-// host should be the externally-reachable hostname (e.g.
-// "gandiva.kingfisher-celsius.ts.net"); port is the tailscale-serve
-// port the orchestrator allocated for this user's code-server.
-// folder is the workspace path to open by default (e.g. "/workspace").
+// host: externally-reachable hostname (e.g. "gandiva.kingfisher-celsius.ts.net")
+// port: tailscale-serve port the orchestrator allocated for this user
+// password: unused in Phase 1 — kept on the API so Phase 2's
+//   reverse-proxy variant can pass it through to code-server's --auth
+//   password mode without an interface change.
+// folder: workspace path to open by default (e.g. "/workspace").
 func URLFor(host string, port int, password, folder string) string {
+	_ = password
 	q := url.Values{}
-	q.Set("tkn", password)
 	if folder != "" {
 		q.Set("folder", folder)
 	}
-	return fmt.Sprintf("https://%s:%d/?%s", host, port, q.Encode())
+	if len(q) > 0 {
+		return fmt.Sprintf("https://%s:%d/?%s", host, port, q.Encode())
+	}
+	return fmt.Sprintf("https://%s:%d/", host, port)
 }
