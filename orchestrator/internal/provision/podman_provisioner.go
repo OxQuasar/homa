@@ -293,6 +293,21 @@ func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 		// container spec stable and the volume cheap when empty.
 		{Src: codeServerDataVolumeName(userID), Dst: codeServerDataContainerPath},
 	}
+	// Bind-mount site-template/.git at its host absolute path inside the
+	// container. The user's worktree at /workspace has a `.git` FILE
+	// (not directory) whose contents are `gitdir: <host-absolute-path>`.
+	// Mounting at the same absolute path makes that pointer resolve, so
+	// `git status` / VS Code's source-control panel / merge ops all work
+	// inside the container without needing to rewrite the .git file or
+	// override GIT_DIR.
+	//
+	// Read-write because git writes to the shared object DB on commit,
+	// fetch, etc. Lock-safety: git uses .lock files; concurrent writers
+	// across containers + host serialize correctly.
+	if pp.SiteTemplateDir != "" {
+		hostGitDir := filepath.Join(pp.SiteTemplateDir, ".git")
+		out = append(out, sandbox.Mount{Src: hostGitDir, Dst: hostGitDir})
+	}
 	if cfgPath, err := pp.ensureUserConfig(userID); err != nil {
 		pp.Log.Warn("ensure user config failed; sandbox will fall back to baked default",
 			"user_id", userID, "err", err)
