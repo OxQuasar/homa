@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { me, logout } from '../lib/api';
   import { openSession, type Session } from '../lib/ws';
-  import type { ChatMessage, ContextStats, Event as NousEvent, Streaming, ToolCall } from '../lib/types';
+  import type { ChatMessage, Event as NousEvent, Streaming, ToolCall } from '../lib/types';
   import { hydrateMessages } from '../lib/history';
   import Chat from '../lib/Chat.svelte';
 
@@ -20,11 +20,18 @@
   let workDir = $state('/workspace');
   let sessionId = $state('');
 
-  // Context-window usage shown in the header. Initial baseline lands when
-  // ws.ts sends context_stats on connect; session_state events update the
-  // `prompt` field live during a run; we re-request after run_done so
-  // the post-turn total is accurate.
-  let contextStats = $state<ContextStats | null>(null);
+  // Context-window usage shown in the header. Two independent sources:
+  //   - promptTokens (live)  ← session_state.prompt_tokens = full
+  //     TotalInputTokens for the session (system + tools + history).
+  //     nous emits session_state on connect, on each step during a run,
+  //     and again at run_done — so this stays fresh end-to-end.
+  //   - contextWindow         ← context_stats.context_window only. We
+  //     used to also pull `prompt` from context_stats, but that's only
+  //     the SYSTEM PROMPT chunk (a few hundred-to-low-thousands of
+  //     tokens), not the conversation total — overriding promptTokens
+  //     with it made the indicator collapse after every run_done.
+  let promptTokens = $state<number | null>(null);
+  let contextWindow = $state<number | null>(null);
 
   // Idle-compaction warning. Orchestrator sends homa.idle_warning frames
   // during the last minute before the sandbox is compacted-and-stopped.
@@ -41,12 +48,12 @@
     return (n / 1_000_000).toFixed(1) + 'M';
   }
   const contextDisplay = $derived.by(() => {
-    if (!contextStats) return null;
-    const used = contextStats.prompt ?? 0;
-    const max = contextStats.context_window ?? 0;
-    if (max <= 0) return formatTokens(used);
-    const pct = Math.round((used / max) * 100);
-    return { used: formatTokens(used), max: formatTokens(max), pct };
+    if (promptTokens === null) return null;
+    if (contextWindow === null || contextWindow <= 0) {
+      return formatTokens(promptTokens);
+    }
+    const pct = Math.round((promptTokens / contextWindow) * 100);
+    return { used: formatTokens(promptTokens), max: formatTokens(contextWindow), pct };
   });
 
   // --- draggable chat / preview splitter -------------------------------
@@ -126,15 +133,20 @@
     switch (ev.type) {
       case 'session_state':
         if (ev.session_state?.directory) workDir = ev.session_state.directory;
-        // session_state carries prompt_tokens — refresh just that field
-        // without losing context_window (which only context_stats supplies).
-        if (typeof ev.session_state?.prompt_tokens === 'number' && contextStats) {
-          contextStats = { ...contextStats, prompt: ev.session_state.prompt_tokens };
+        // PromptTokens here = sess.TokenUsage.TotalInputTokens() — the
+        // full input-token count for the session. Single source of truth
+        // for the header's "used" number; nous emits session_state on
+        // connect, every run step, and run_done.
+        if (typeof ev.session_state?.prompt_tokens === 'number') {
+          promptTokens = ev.session_state.prompt_tokens;
         }
         break;
 
       case 'context_stats':
-        if (ev.stats) contextStats = ev.stats;
+        // We only consume context_window from this — `prompt` here is
+        // just the system-prompt overhead estimate, not the total. See
+        // promptTokens above for the live total.
+        if (ev.stats?.context_window) contextWindow = ev.stats.context_window;
         break;
 
       case 'homa.idle_warning':
@@ -182,13 +194,12 @@
       }
 
       case 'run_done':
-        // End of a full multi-step run. Flush any in-flight streaming
-        // bubble into messages and return to idle. Refresh context stats —
-        // the run's tool outputs / new messages all add tokens that
-        // session_state events may not have surfaced cleanly.
+        // End of a full multi-step run. Flush the in-flight streaming
+        // bubble into messages and return to idle. No context_stats
+        // re-request needed — nous emits session_state at run_done with
+        // updated PromptTokens, which our session_state handler captures.
         flushStreaming();
         session.status = 'idle';
-        ws?.send({ type: 'context_stats' });
         break;
     }
   }
