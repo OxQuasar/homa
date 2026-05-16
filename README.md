@@ -222,18 +222,24 @@ context that summarization makes a meaningful dent in token usage).
 
 ### Restart orchestrator
 
+Ad-hoc foreground (good for development):
+
 ```bash
-# Find + kill
-pkill -f "homa -config"
-
-# Or systemd-style if you've wrapped it
-systemctl --user restart homa.service
-
-# Foreground (default operator pattern):
-cd ~/homa && ./homa -config config.json
+pkill -f "homa -config" && cd ~/homa && ./homa -config config.json
 ```
 
-The orchestrator restart does **not** restart sandbox containers (they're managed independently by podman). Restart containers explicitly via `podman stop` when you need them to pick up image / config changes.
+Production / always-on: user-level systemd service. One-time setup with
+`bash ~/homa/systemd/install.sh` (installs the unit, enables linger, starts
+it). Then:
+
+```bash
+systemctl --user restart homa
+journalctl   --user -u homa -f
+```
+
+See `OPS_CHEATSHEET.md` for the full daily-ops reference.
+
+Orchestrator restart does **not** restart sandbox containers (they're managed independently by podman). Restart containers explicitly via `podman stop` when you need them to pick up image / config changes.
 
 ### Rebuild the sandbox image
 

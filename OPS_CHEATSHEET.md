@@ -4,17 +4,53 @@ Single-operator reference. Architectural background lives in `README.md`.
 
 ## Start / restart
 
+Two ways to run homa: ad-hoc foreground (good for iterating on code) or as a user-level systemd service (production / always-on).
+
+### Ad-hoc foreground
+
 ```bash
-# Foreground (normal)
+# Run / restart
 cd ~/homa && ./homa -config config.json
 
-# Restart current
-pkill -f "homa -config" && cd ~/homa && ./homa -config config.json
+# Stop foreground instance
+pkill -f "homa -config"
 
 # What's running?
 ps -o pid,etime,lstart,cmd -p $(pgrep -f "homa -config")
 stat -c "binary built: %y" ~/homa/homa
 ```
+
+### Systemd (recommended for daily use)
+
+One-time install:
+
+```bash
+bash ~/homa/systemd/install.sh
+# - Copies homa.service into ~/.config/systemd/user/
+# - Enables it (auto-start)
+# - Calls `sudo loginctl enable-linger $USER` so it survives logout/reboot
+# - Stops any foreground homa instance and starts the systemd-managed one
+```
+
+Daily ops:
+
+```bash
+systemctl --user status  homa             # is it up? since when?
+systemctl --user restart homa             # after a rebuild
+systemctl --user stop    homa             # take it down (won't auto-restart on clean stop)
+systemctl --user start   homa
+journalctl   --user -u   homa -f          # live logs
+journalctl   --user -u   homa --since '10 min ago'
+```
+
+Behavior:
+- `Restart=on-failure` — auto-respawns after crashes, not after clean stop
+- 20s graceful shutdown window (orchestrator's `shutdownGrace` is 10s)
+- Logs to the journal — no log file rotation to manage
+
+After rebuilding the binary (`cd orchestrator && go build -o ~/homa/homa ./cmd/homa`), just `systemctl --user restart homa`.
+
+### Either way
 
 Orchestrator restart does NOT restart sandbox containers — they're managed independently by Podman. Restart them explicitly when needed (see "Pick up a new image").
 

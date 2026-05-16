@@ -1,0 +1,35 @@
+[Unit]
+Description=Homa orchestrator
+Documentation=https://github.com/OxQuasar/homa
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Foreground binary, no daemonization.
+Type=simple
+WorkingDirectory=%h/homa
+ExecStart=%h/homa/homa -config config.json
+
+# %h expands to the user's home — keeps this unit file user-relocatable
+# (works for any user that has homa installed under ~/homa).
+
+# Restart only on unexpected exits. Graceful shutdowns (SIGTERM exit 0)
+# leave the service stopped until explicitly restarted.
+Restart=on-failure
+RestartSec=5s
+
+# Bound the graceful-shutdown window. The orchestrator's shutdownGrace
+# constant is 10s; give a buffer so an in-flight provision can finish
+# before SIGKILL.
+TimeoutStopSec=20s
+
+# Logs land in journalctl --user -u homa.
+StandardOutput=journal
+StandardError=journal
+
+# Resource ceilings — orchestrator itself is tiny; sandboxes live in
+# their own podman cgroups so these only bound the Go process.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
