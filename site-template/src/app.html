@@ -4,6 +4,59 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<!--
+		  homa error beacon: forwards window.onerror + unhandledrejection
+		  events up to the homa editor (window.parent) so the LLM sees
+		  runtime failures on the user's next prompt. No-op when the page
+		  isn't iframed (= public site at gandiva.../). Lives in app.html
+		  because SvelteKit dev bypasses vite's transformIndexHtml hook,
+		  so a plugin-injected version doesn't fire. Removing this <script>
+		  block disables the feature for this site only.
+		-->
+		<script>
+			(function () {
+				if (window.parent === window) return;
+				var THROTTLE_MS = 500;
+				var lastSent = Object.create(null);
+				function send(payload) {
+					var key = payload.kind + '|' + payload.message;
+					var now = Date.now();
+					if (lastSent[key] && now - lastSent[key] < THROTTLE_MS) return;
+					lastSent[key] = now;
+					try {
+						window.parent.postMessage(
+							{ type: 'homa:browser-error', payload: payload },
+							'*'
+						);
+					} catch (e) {}
+				}
+				window.addEventListener('error', function (e) {
+					send({
+						kind: 'error',
+						message: e.message || String(e),
+						stack: (e.error && e.error.stack) || null,
+						source: e.filename || null,
+						line: e.lineno || null,
+						col: e.colno || null,
+						url: window.location.href,
+						timestamp: Date.now()
+					});
+				});
+				window.addEventListener('unhandledrejection', function (e) {
+					var r = e.reason;
+					var msg =
+						(r && (r.message || (typeof r === 'string' ? r : null))) ||
+						(r ? String(r) : 'Unknown rejection');
+					send({
+						kind: 'unhandledrejection',
+						message: msg,
+						stack: (r && r.stack) || null,
+						url: window.location.href,
+						timestamp: Date.now()
+					});
+				});
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">
