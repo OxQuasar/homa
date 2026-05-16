@@ -7,13 +7,15 @@
 
 <div class="msg msg-{message.role}">
   <div class="role">{message.role}</div>
-  <div class="text">{message.text}</div>
   {#if message.tools && message.tools.length > 0}
     <div class="tools">
       {#each message.tools as t (t.id)}
         <ToolCard tool={t} />
       {/each}
     </div>
+  {/if}
+  {#if message.text}
+    <div class="text">{message.text}</div>
   {/if}
 </div>
 
@@ -22,5 +24,7 @@
   .msg-user { background: #f7f7fa; }
   .role { font-size: 0.75rem; text-transform: uppercase; color: #888; margin-bottom: 0.25rem; }
   .text { white-space: pre-wrap; line-height: 1.45; }
-  .tools { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
+  /* Tools render above the text; spacing applied below so the text sits
+     close to the tool stack visually. */
+  .tools { margin-bottom: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
 </style>
