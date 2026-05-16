@@ -161,6 +161,14 @@
     ws?.send({ type: 'run', prompt: text });
   }
 
+  // Stop the in-flight run. nous handles cancellation and emits the
+  // usual run_done back, at which point handleEvent flips status → idle.
+  // We don't optimistically flip status here — let the server confirm
+  // so the UI stays consistent with backend state.
+  function onStop() {
+    ws?.send({ type: 'stop' });
+  }
+
   async function onLogout() {
     try { await logout(); } catch { /* idempotent */ }
     window.location.hash = '#/login';
@@ -189,7 +197,8 @@
         messages={session.messages}
         streaming={session.streaming}
         status={session.status}
-        onSend={onSend}
+        {onSend}
+        {onStop}
       />
     </section>
     <div

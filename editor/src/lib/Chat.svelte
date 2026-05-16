@@ -10,11 +10,12 @@
   import Message from './Message.svelte';
   import Input from './Input.svelte';
 
-  const { messages, streaming, status, onSend }: {
+  const { messages, streaming, status, onSend, onStop }: {
     messages: ChatMessage[];
     streaming: Streaming | null;
     status: 'idle' | 'running';
     onSend: (text: string) => void;
+    onStop?: () => void;
   } = $props();
 
   // Pseudo-message for the in-flight assistant turn, so it renders identically
@@ -100,7 +101,7 @@
       </div>
     {/if}
   </div>
-  <Input onSubmit={onSend} disabled={status === 'running'} />
+  <Input onSubmit={onSend} {onStop} {status} />
 </div>
 
 <style>

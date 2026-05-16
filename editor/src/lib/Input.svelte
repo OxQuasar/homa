@@ -1,16 +1,31 @@
 <script lang="ts">
-  const { onSubmit, disabled = false }: {
+  // Status-aware input. While idle, the button is a Send; while running,
+  // the same slot becomes a Stop that cancels the in-flight run. Keeps
+  // the textarea disabled-but-prefillable so users can compose their next
+  // prompt while waiting (and submit once the run finishes).
+  const { onSubmit, onStop, status }: {
     onSubmit: (text: string) => void;
-    disabled?: boolean;
+    onStop?: () => void;
+    status: 'idle' | 'running';
   } = $props();
 
   let text = $state('');
+  const running = $derived(status === 'running');
 
   function submit() {
+    if (running) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     onSubmit(trimmed);
     text = '';
+  }
+
+  function onButton() {
+    if (running) {
+      onStop?.();
+      return;
+    }
+    submit();
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -25,11 +40,13 @@
   <textarea
     bind:value={text}
     onkeydown={onKeydown}
-    placeholder="Ask homa to change your site…"
+    placeholder={running ? 'Compose your next prompt…' : 'Ask homa to change your site…'}
     rows="3"
-    {disabled}
+    disabled={running}
   ></textarea>
-  <button onclick={submit} {disabled}>Send</button>
+  <button onclick={onButton} class:stop={running}>
+    {running ? 'Stop' : 'Send'}
+  </button>
 </div>
 
 <style>
@@ -41,7 +58,12 @@
   textarea:disabled { background: #f0f0f0; }
   button {
     padding: 0 1rem; border: 1px solid #444; background: #222; color: white;
-    border-radius: 4px; cursor: pointer;
+    border-radius: 4px; cursor: pointer; min-width: 5rem;
   }
-  button:disabled { background: #999; cursor: not-allowed; }
+  /* Stop variant — distinct from Send so the action is obvious. Red
+     ring + slightly darker fill; not enough contrast change to be jarring. */
+  button.stop {
+    background: #b30000; border-color: #b30000;
+  }
+  button.stop:hover { background: #d10000; }
 </style>
