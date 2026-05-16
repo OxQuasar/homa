@@ -20,6 +20,58 @@
   let workDir = $state('/workspace');
   let sessionId = $state('');
 
+  // --- draggable chat / preview splitter -------------------------------
+  //
+  // Two-pane grid; user drags the splitter to resize. Width persisted to
+  // localStorage so reloads keep the user's layout. Clamped so neither
+  // pane disappears.
+
+  const CHAT_WIDTH_KEY = 'homa.chatWidth';
+  const CHAT_WIDTH_DEFAULT_PX = 420;
+  const CHAT_MIN_PX = 280;
+  const PREVIEW_MIN_PX = 320;
+
+  let chatWidth = $state(loadChatWidth());
+
+  function loadChatWidth(): number {
+    if (typeof window === 'undefined') return CHAT_WIDTH_DEFAULT_PX;
+    const raw = window.localStorage.getItem(CHAT_WIDTH_KEY);
+    const n = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? clampChatWidth(n) : CHAT_WIDTH_DEFAULT_PX;
+  }
+
+  function clampChatWidth(px: number): number {
+    if (typeof window === 'undefined') return px;
+    const max = Math.max(CHAT_MIN_PX, window.innerWidth - PREVIEW_MIN_PX);
+    return Math.min(max, Math.max(CHAT_MIN_PX, px));
+  }
+
+  function startSplitterDrag(e: PointerEvent) {
+    e.preventDefault();
+    document.body.classList.add('splitting');
+    // Capture pointer events so the drag survives even when the cursor
+    // crosses the iframe (which would otherwise eat pointermove).
+    const onMove = (ev: PointerEvent) => {
+      chatWidth = clampChatWidth(ev.clientX);
+    };
+    const onUp = () => {
+      document.body.classList.remove('splitting');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      try {
+        window.localStorage.setItem(CHAT_WIDTH_KEY, String(chatWidth));
+      } catch { /* private mode etc. — non-fatal */ }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  // Re-clamp on viewport resize so the chat pane doesn't end up wider
+  // than the window after a window shrink.
+  function onWindowResize() {
+    chatWidth = clampChatWidth(chatWidth);
+  }
+
   onMount(async () => {
     try {
       const m = await me();
@@ -115,6 +167,8 @@
   }
 </script>
 
+<svelte:window onresize={onWindowResize} />
+
 <div class="layout">
   <header>
     <div class="brand">homa</div>
@@ -129,7 +183,7 @@
       <button onclick={onLogout}>Log out</button>
     </div>
   </header>
-  <main>
+  <main style:--chat-width="{chatWidth}px">
     <section class="chat-pane">
       <Chat
         messages={session.messages}
@@ -138,6 +192,13 @@
         onSend={onSend}
       />
     </section>
+    <div
+      class="splitter"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize chat panel"
+      onpointerdown={startSplitterDrag}
+    ></div>
     <section class="preview-pane">
       {#if session.previewUrl}
         <iframe title="preview" src={session.previewUrl}></iframe>
@@ -182,9 +243,31 @@
   }
 
   button { padding: 0.25rem 0.6rem; border: 1px solid #aaa; background: #fff; border-radius: 4px; cursor: pointer; }
-  main { display: grid; grid-template-columns: minmax(340px, 1fr) 2fr; flex: 1; min-height: 0; }
-  .chat-pane { border-right: 1px solid #ddd; display: flex; flex-direction: column; min-height: 0; }
-  .preview-pane { display: flex; min-height: 0; }
+
+  /* Three-column grid: chat (user-resized) | splitter (6px) | preview (rest). */
+  main {
+    display: grid;
+    grid-template-columns: var(--chat-width, 420px) 6px 1fr;
+    flex: 1;
+    min-height: 0;
+  }
+  .chat-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .preview-pane { display: flex; min-height: 0; min-width: 0; }
   iframe { flex: 1; border: 0; }
   .placeholder { display: flex; align-items: center; justify-content: center; flex: 1; color: #999; }
+
+  /* Drag handle between the two panes. Stays subtle until hover. */
+  .splitter {
+    background: #e6e6e6;
+    cursor: col-resize;
+    transition: background 0.12s;
+    touch-action: none;     /* prevent browser scroll-gesture from eating pointerdown */
+    outline: none;
+  }
+  .splitter:hover { background: #888; }
+
+  /* While dragging: kill iframe interception of pointermove + show the
+     col-resize cursor everywhere, even over the iframe. */
+  :global(body.splitting) { cursor: col-resize !important; user-select: none; }
+  :global(body.splitting iframe) { pointer-events: none; }
 </style>
