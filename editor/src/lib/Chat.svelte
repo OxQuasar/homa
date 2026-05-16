@@ -1,11 +1,4 @@
 <script lang="ts" module>
-  // Show the "thinking..." placeholder only between request-sent and the
-  // first stream event. Once any text/tool delta arrives, liveMessage is
-  // non-null and the rendered Message itself signals activity.
-  function shouldShowThinking(status: 'idle' | 'running', live: ChatMessage | null): boolean {
-    return status === 'running' && live === null;
-  }
-
   // Follow-mode threshold (px). Anything within this of the bottom counts
   // as "pinned" — gives a little slack so subpixel scroll jitter doesn't
   // unpin during streaming.
@@ -93,7 +86,13 @@
     {#if liveMessage}
       <Message message={liveMessage} />
     {/if}
-    {#if shouldShowThinking(status, liveMessage)}
+    {#if status === 'running'}
+      <!--
+        Dots show throughout the whole run, not just the request→first-delta
+        gap. Between bursts (e.g. text-then-tool, then waiting for tool
+        result, then more text), liveMessage is non-null but the LLM is
+        still working — without this indicator the chat looks frozen.
+      -->
       <div class="thinking" aria-live="polite">
         <span class="dot"></span>
         <span class="dot"></span>

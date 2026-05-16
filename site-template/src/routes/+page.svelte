@@ -7,6 +7,13 @@
   <meta name="description" content="The shining city of Tar Valon — home of the White Tower." />
 </svelte:head>
 
+<!--
+  Login link in the top-right corner. For now it points at the SPA's login
+  page; once we move the auth UI inline into this site, this hook stays
+  put and we swap its target / replace it with a logged-in-state indicator.
+-->
+<a class="login-link" href="/login">Login</a>
+
 <Hero
   image="/images/white-tower-night.jpg"
   alt="A white stone tower with a wooden door, evoking the White Tower of Tar Valon"
@@ -17,3 +24,27 @@
   ctaY="68%"
   nightTint
 />
+
+<style>
+  .login-link {
+    position: fixed;
+    top: 1.25rem;
+    right: 1.5rem;
+    z-index: 10;
+    padding: 0.45rem 1.1rem;
+    border-radius: 999px;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    color: #f5f1e6;
+    text-decoration: none;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(245, 241, 230, 0.45);
+    backdrop-filter: blur(6px);
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+  .login-link:hover {
+    background: rgba(0, 0, 0, 0.45);
+    border-color: rgba(245, 241, 230, 0.85);
+  }
+</style>
