@@ -105,7 +105,10 @@
 </div>
 
 <style>
-  .chat { display: flex; flex-direction: column; height: 100%; }
+  /* flex: 1 (instead of height: 100%) so a sibling rendered above us in
+     a flex-column parent (e.g. the error-feedback badge in editor.svelte)
+     gets its natural height and Chat fills the remainder. */
+  .chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .messages { flex: 1; overflow-y: auto; }
 
   /* Three pulsing dots while waiting for the first stream event. Replaces

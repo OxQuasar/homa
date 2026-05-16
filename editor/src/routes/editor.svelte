@@ -2,8 +2,20 @@
   import { onMount, onDestroy } from 'svelte';
   import { me, logout } from '../lib/api';
   import { openSession, type Session } from '../lib/ws';
-  import type { ChatMessage, Event as NousEvent, Streaming, ToolCall } from '../lib/types';
+  import type {
+    BufferedError,
+    ChatMessage,
+    Event as NousEvent,
+    Streaming,
+    ToolCall
+  } from '../lib/types';
   import { hydrateMessages } from '../lib/history';
+  import {
+    addToBuffer,
+    augmentPrompt,
+    originOf,
+    parseBeaconMessage
+  } from '../lib/iframe_errors';
   import Chat from '../lib/Chat.svelte';
 
   // Spec: §11 state shape.
@@ -39,6 +51,13 @@
   // (server resets the idle clock) or on WS close (forced disconnect at
   // the actual compaction).
   let idleWarningSeconds = $state<number | null>(null);
+
+  // Browser errors observed in the iframe via the beacon
+  // (site-template/vite.config.ts injects it into every page <head>).
+  // Buffered + deduped; prepended to the user's next prompt so the LLM
+  // can self-correct. Cleared on send.
+  let errorBuffer = $state<BufferedError[]>([]);
+  let errorsExpanded = $state(false);
 
   // Formatters for the header pill. "12.3k" rather than 12345 so it
   // stays compact across orders of magnitude.
@@ -125,9 +144,24 @@
       onStatus: (s) => (wsStatus = s),
       onEvent: handleEvent
     });
+
+    // Iframe error beacon → editor buffer. parseBeaconMessage handles
+    // the origin allowlist (only messages from session.previewUrl's
+    // origin land in the buffer) + payload shape validation.
+    window.addEventListener('message', onIframeMessage);
   });
 
-  onDestroy(() => ws?.close());
+  onDestroy(() => {
+    window.removeEventListener('message', onIframeMessage);
+    ws?.close();
+  });
+
+  function onIframeMessage(e: MessageEvent) {
+    const allowed = originOf(session.previewUrl);
+    const err = parseBeaconMessage(e, allowed);
+    if (!err) return;
+    errorBuffer = addToBuffer(errorBuffer, err);
+  }
 
   function handleEvent(ev: NousEvent) {
     switch (ev.type) {
@@ -215,14 +249,21 @@
   }
 
   function onSend(text: string) {
-    session.messages.push({ role: 'user', text });
+    // Prepend any buffered iframe errors so the LLM sees the same
+    // failure context the user does. The augmented string is also what
+    // we push to chat history — transparency over hidden context.
+    const prompt = augmentPrompt(text, errorBuffer);
+    errorBuffer = [];
+    errorsExpanded = false;
+
+    session.messages.push({ role: 'user', text: prompt });
     session.status = 'running';
     // Any user message resets the server-side idle clock, so the
     // warning banner (if showing) becomes stale immediately. Clear it
     // optimistically; if the orchestrator's next tick still considers
     // the user idle for some reason, it'll re-set.
     idleWarningSeconds = null;
-    ws?.send({ type: 'run', prompt: text });
+    ws?.send({ type: 'run', prompt });
   }
 
   // Stop the in-flight run. nous handles cancellation and emits the
@@ -277,6 +318,44 @@
   </header>
   <main style:--chat-width="{chatWidth}px">
     <section class="chat-pane">
+      {#if errorBuffer.length > 0}
+        <!--
+          Browser-error badge. Click toggles the expanded list; ✕ clears
+          the buffer without sending. Errors flush automatically on the
+          next prompt — see onSend.
+        -->
+        <div class="err-badge" class:expanded={errorsExpanded}>
+          <button
+            class="err-summary"
+            onclick={() => (errorsExpanded = !errorsExpanded)}
+            title="Click to expand. Will be sent with next message."
+          >
+            ⚠ {errorBuffer.length} browser
+            {errorBuffer.length === 1 ? 'error' : 'errors'}
+          </button>
+          <button
+            class="err-clear"
+            onclick={() => {
+              errorBuffer = [];
+              errorsExpanded = false;
+            }}
+            title="Discard without sending"
+          >
+            ✕
+          </button>
+          {#if errorsExpanded}
+            <ul class="err-list">
+              {#each errorBuffer as e}
+                <li>
+                  <span class="err-kind">{e.kind}</span>
+                  {#if e.count > 1}<span class="err-count">×{e.count}</span>{/if}
+                  <code class="err-msg">{e.message}</code>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
       <Chat
         messages={session.messages}
         streaming={session.streaming}
@@ -376,6 +455,49 @@
     min-height: 0;
   }
   .chat-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
+  /* Browser-error badge — sits above Chat in the chat pane. Amber
+     background + warn glyph mirror the idle-warning header pill, so
+     the visual language for "needs your attention" is consistent. */
+  .err-badge {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem;
+    padding: 0.4rem 0.6rem;
+    background: #fff4e0; color: #8a5a00;
+    border-bottom: 1px solid #f0d28a;
+    font-size: 0.82rem;
+  }
+  .err-summary, .err-clear {
+    background: transparent; border: 0; cursor: pointer;
+    color: inherit; font: inherit;
+    padding: 0.1rem 0.35rem; border-radius: 3px;
+    min-width: 0;
+  }
+  .err-summary:hover, .err-clear:hover { background: rgba(0,0,0,0.05); }
+  .err-summary { font-weight: 600; }
+  .err-clear { margin-left: auto; font-size: 0.95rem; line-height: 1; }
+  .err-list {
+    width: 100%; margin: 0.35rem 0 0 0; padding: 0;
+    list-style: none;
+    max-height: 12rem; overflow-y: auto;
+    font-size: 0.78rem; line-height: 1.4;
+  }
+  .err-list li { padding: 0.15rem 0; }
+  .err-kind {
+    display: inline-block; padding: 0 0.3rem;
+    border-radius: 2px;
+    background: rgba(138, 90, 0, 0.15);
+    margin-right: 0.35rem;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+  }
+  .err-count {
+    margin-right: 0.35rem;
+    font-weight: 600;
+  }
+  .err-msg {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    word-break: break-all;
+  }
   .preview-pane { display: flex; min-height: 0; min-width: 0; }
   iframe { flex: 1; border: 0; }
   .placeholder { display: flex; align-items: center; justify-content: center; flex: 1; color: #999; }

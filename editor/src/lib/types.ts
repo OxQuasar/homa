@@ -112,6 +112,35 @@ export interface Request {
   prompt?: string;
 }
 
+// --- Browser-error feedback (from the iframe's beacon) ---
+
+// BrowserError is the wire payload posted by the vite-injected beacon
+// in the user's site iframe. Mirrored in site-template/vite.config.ts.
+// Field names match what the beacon emits — keep in sync.
+export interface BrowserError {
+  kind: 'error' | 'unhandledrejection';
+  message: string;
+  stack?: string | null;
+  source?: string | null;
+  line?: number | null;
+  col?: number | null;
+  url: string;
+  timestamp: number;
+}
+
+// BufferedError aggregates duplicates: the beacon throttles per-signature
+// but a single page reload can still emit many distinct-but-same-shape
+// errors. Editor coalesces by (kind, message) and bumps count.
+export interface BufferedError {
+  kind: BrowserError['kind'];
+  message: string;
+  stack?: string | null;
+  url: string;       // url of the FIRST occurrence (subsequent ones are usually same)
+  firstSeen: number; // ms
+  lastSeen: number;  // ms
+  count: number;
+}
+
 // --- Editor view model ---
 
 export interface ChatMessage {

@@ -180,6 +180,34 @@ done
 
 Site-template's git history covers itself; backing up `branches/` is mostly for uncommitted in-flight LLM work.
 
+## Browser errors → LLM
+
+A tiny vite plugin in `site-template/vite.config.ts` injects a script
+that captures `window.onerror` + `unhandledrejection` events in the
+user's site iframe and posts them up to the editor (cross-origin
+postMessage). Editor buffers + dedupes them, surfaces an amber
+*"⚠ N browser errors"* badge above the chat input, and **prepends the
+buffer to the user's next prompt** so the LLM sees the same failures
+the user does. Cleared on send (or `✕` on the badge).
+
+Auto-on for any user whose `vite.config.ts` includes the plugin —
+new signups inherit it from the template. To roll it forward to an
+existing user's branch:
+
+```bash
+cp ~/homa/site-template/vite.config.ts ~/homa/branches/<userid>/vite.config.ts
+# Next ./homa merge auto-commits it.
+```
+
+**Disable** (operator-level, per-user): replace the user's vite.config.ts
+with one that omits the plugin. Or set `if (window.parent === window)`
+hard to skip — see the script source in `site-template/vite.config.ts`.
+
+Errors that *don't* flow through this loop today: vite build errors
+(when the user's code has a syntax error, no JS runs in the iframe).
+HMR errors. console.error / console.warn. CSS-only failures. The LLM
+sees runtime JS errors and unhandled promise rejections.
+
 ## Get a user file (photo, etc.) into their site
 
 Three paths:
