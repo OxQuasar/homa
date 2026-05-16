@@ -247,9 +247,41 @@ func TestProvisionEmptyUserID(t *testing.T) {
 	}
 }
 
-// TestProvisionClaudeCredsMountWhenFileExists — when ClaudeCredentialsPath
-// points at an existing file, the bind mount appears on the Spec passed to
-// Sandbox.Ensure. Missing file → no mount; empty path → no mount.
+// findMount returns the mount whose Dst matches, or nil. Spec mounts have
+// no guaranteed slice order, so tests should look up by destination rather
+// than positional index.
+func findMount(ms []sandbox.Mount, dst string) *sandbox.Mount {
+	for i := range ms {
+		if ms[i].Dst == dst {
+			return &ms[i]
+		}
+	}
+	return nil
+}
+
+// TestProvisionNousDataVolumeAlwaysMounted — the nous data dir gets a
+// per-user named volume on every Provision, regardless of creds config.
+// This is what keeps chat history across container --rm.
+func TestProvisionNousDataVolumeAlwaysMounted(t *testing.T) {
+	pp, _, _, sb, _ := newRig(t)
+	if _, err := pp.Provision(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	m := findMount(sb.lastSpec.Mounts, "/root/.nous")
+	if m == nil {
+		t.Fatalf("no /root/.nous mount on spec; got %+v", sb.lastSpec.Mounts)
+	}
+	if m.Src != "homa-user-abcd1234-nous" {
+		t.Errorf("volume name: got %q, want %q", m.Src, "homa-user-abcd1234-nous")
+	}
+	if m.ReadOnly {
+		t.Error("nous data volume must be writable")
+	}
+}
+
+// TestProvisionClaudeCredsMount — the claude credentials bind shows up
+// only when configured + file exists. Independent of the nous-data volume,
+// which is always present.
 func TestProvisionClaudeCredsMount(t *testing.T) {
 	dir := t.TempDir()
 	existing := dir + "/.credentials.json"
@@ -261,11 +293,11 @@ func TestProvisionClaudeCredsMount(t *testing.T) {
 	cases := []struct {
 		name      string
 		credsPath string
-		wantMount bool
+		wantCreds bool
 	}{
-		{"empty path → no mount", "", false},
-		{"missing file → no mount", missing, false},
-		{"existing file → ro mount", existing, true},
+		{"empty path → no creds mount", "", false},
+		{"missing file → no creds mount", missing, false},
+		{"existing file → ro creds mount", existing, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,34 +306,29 @@ func TestProvisionClaudeCredsMount(t *testing.T) {
 			if _, err := pp.Provision(context.Background(), "abcd1234"); err != nil {
 				t.Fatalf("Provision: %v", err)
 			}
-			gotMounts := sb.lastSpec.Mounts
-			if tc.wantMount {
-				if len(gotMounts) != 1 {
-					t.Fatalf("mounts: got %v, want 1", gotMounts)
+			creds := findMount(sb.lastSpec.Mounts, "/root/.claude/.credentials.json")
+			if tc.wantCreds {
+				if creds == nil {
+					t.Fatalf("no creds mount; got %+v", sb.lastSpec.Mounts)
 				}
-				m := gotMounts[0]
-				if m.Src != tc.credsPath {
-					t.Errorf("Src: got %q, want %q", m.Src, tc.credsPath)
+				if creds.Src != tc.credsPath {
+					t.Errorf("Src: got %q, want %q", creds.Src, tc.credsPath)
 				}
-				if m.Dst != "/root/.claude/.credentials.json" {
-					t.Errorf("Dst: got %q", m.Dst)
+				if !creds.ReadOnly {
+					t.Error("creds mount must be ReadOnly")
 				}
-				if !m.ReadOnly {
-					t.Error("ReadOnly: got false, want true")
-				}
-			} else {
-				if len(gotMounts) != 0 {
-					t.Errorf("mounts: got %v, want none", gotMounts)
-				}
+			} else if creds != nil {
+				t.Errorf("unexpected creds mount: %+v", *creds)
 			}
 		})
 	}
 }
 
-// TestEnsureRunningClaudeCredsMount — same mount semantics on the recovery
-// path. EnsureRunning is what kicks in after idle-GC, so this is where the
-// "host refresh visible to respawned sandbox" benefit actually applies.
-func TestEnsureRunningClaudeCredsMount(t *testing.T) {
+// TestEnsureRunningExtraMounts — recovery path emits the same mount set
+// (nous-data volume always; creds bind when configured). EnsureRunning is
+// what fires after idle-GC, which is exactly where the volume earns its
+// keep — history must survive the respawn.
+func TestEnsureRunningExtraMounts(t *testing.T) {
 	dir := t.TempDir()
 	existing := dir + "/.credentials.json"
 	if err := os.WriteFile(existing, []byte(`{"claudeAiOauth":{"accessToken":"x"}}`), 0o600); err != nil {
@@ -313,8 +340,11 @@ func TestEnsureRunningClaudeCredsMount(t *testing.T) {
 	if err := pp.EnsureRunning(context.Background(), "abcd1234"); err != nil {
 		t.Fatalf("EnsureRunning: %v", err)
 	}
-	if len(sb.lastSpec.Mounts) != 1 || sb.lastSpec.Mounts[0].Src != existing {
-		t.Errorf("EnsureRunning mounts: got %+v, want one with Src=%s", sb.lastSpec.Mounts, existing)
+	if findMount(sb.lastSpec.Mounts, "/root/.nous") == nil {
+		t.Errorf("EnsureRunning missing /root/.nous volume: %+v", sb.lastSpec.Mounts)
+	}
+	if findMount(sb.lastSpec.Mounts, "/root/.claude/.credentials.json") == nil {
+		t.Errorf("EnsureRunning missing creds mount: %+v", sb.lastSpec.Mounts)
 	}
 }
 

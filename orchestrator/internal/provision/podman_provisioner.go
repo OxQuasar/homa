@@ -67,6 +67,18 @@ type PodmanProvisioner struct {
 // reads (~/.claude/.credentials.json with HOME=/root for the container's root user).
 const claudeCredsContainerPath = "/root/.claude/.credentials.json"
 
+// nousDataContainerPath is the in-container nous data dir (sessions/, logs/,
+// token cache, etc.). Backed by a per-user named volume so the data survives
+// container --rm (which is critical for chat-history persistence across
+// idle-GC respawn cycles).
+const nousDataContainerPath = "/root/.nous"
+
+// nousDataVolumeName returns the podman named volume that persists a user's
+// nous data dir. Format matches containerNamePrefix for grep symmetry.
+func nousDataVolumeName(userID string) string {
+	return "homa-user-" + userID + "-nous"
+}
+
 // completedSteps records which side-effect steps succeeded so tear-down on
 // failure can roll back in the reverse order.
 type completedSteps struct {
@@ -141,7 +153,7 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		MemoryLimit:   pp.MemoryLimit,
 		CPULimit:      pp.CPULimit,
 		Env:           map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey},
-		Mounts:        pp.claudeCredsMount(),
+		Mounts:        pp.extraMounts(userID),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
 		return Result{}, pp.fail(ctx, log, steps, fmt.Errorf("provision: sandbox ensure: %w", err))
@@ -179,28 +191,33 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	return result, nil
 }
 
-// claudeCredsMount returns the bind-mount for the host's Claude Code
-// credentials file when configured and present, otherwise nil. Probed each
-// call so a file that appears mid-run (e.g. after the operator runs
-// `claude login`) becomes available to subsequent sandboxes without a
-// restart. Missing-file is informational, not an error — the env-var
-// fallback still works.
-func (pp *PodmanProvisioner) claudeCredsMount() []sandbox.Mount {
-	if pp.ClaudeCredentialsPath == "" {
-		return nil
+// extraMounts returns the per-user mounts beyond the workspace bind:
+//   - the host's Claude Code credentials file (read-only) when configured
+//     and present at provision time
+//   - a podman named volume mounted at /root/.nous so chat history /
+//     session JSONL / token cache survive container --rm
+//
+// Probed each call so a creds file that appears mid-run (e.g. operator
+// runs `claude login`) becomes available to subsequent sandboxes without
+// an orchestrator restart. Missing creds file is informational — the
+// env-var fallback still works.
+func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
+	out := []sandbox.Mount{
+		{Src: nousDataVolumeName(userID), Dst: nousDataContainerPath},
 	}
-	if _, err := os.Stat(pp.ClaudeCredentialsPath); err != nil {
-		if !os.IsNotExist(err) {
+	if pp.ClaudeCredentialsPath != "" {
+		if _, err := os.Stat(pp.ClaudeCredentialsPath); err == nil {
+			out = append(out, sandbox.Mount{
+				Src:      pp.ClaudeCredentialsPath,
+				Dst:      claudeCredsContainerPath,
+				ReadOnly: true,
+			})
+		} else if !os.IsNotExist(err) {
 			pp.Log.Warn("claude credentials stat failed",
 				"path", pp.ClaudeCredentialsPath, "err", err)
 		}
-		return nil
 	}
-	return []sandbox.Mount{{
-		Src:      pp.ClaudeCredentialsPath,
-		Dst:      claudeCredsContainerPath,
-		ReadOnly: true,
-	}}
+	return out
 }
 
 // failedTeardownLogLines bounds how many lines of container stdout/stderr to
@@ -346,7 +363,7 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 		MemoryLimit:   pp.MemoryLimit,
 		CPULimit:      pp.CPULimit,
 		Env:           map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey},
-		Mounts:        pp.claudeCredsMount(),
+		Mounts:        pp.extraMounts(u.ID),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
 		log.Error("ensure: failed", "stage", "sandbox_ensure", "err", err)
