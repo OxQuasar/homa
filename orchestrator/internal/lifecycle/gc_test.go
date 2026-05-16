@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -30,7 +31,7 @@ func newFakeManager(running []string) *fakeManager {
 	return &fakeManager{running: r, stopErrs: map[string]error{}}
 }
 
-func (f *fakeManager) Ensure(_ context.Context, _ sandbox.Spec) error  { return nil }
+func (f *fakeManager) Ensure(_ context.Context, _ sandbox.Spec) error { return nil }
 func (f *fakeManager) Logs(_ context.Context, _ string, _ int) ([]string, error) {
 	return nil, nil
 }
@@ -49,13 +50,12 @@ func (f *fakeManager) Stop(_ context.Context, name string) error {
 	f.running[name] = false
 	return nil
 }
-
 func (f *fakeManager) stoppedSnapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, len(f.stopped))
 	copy(out, f.stopped)
-	sort.Strings(out) // order-independent comparison
+	sort.Strings(out)
 	return out
 }
 
@@ -66,95 +66,247 @@ func (f *fakeLister) ListUsers(_ context.Context) ([]store.UserSummary, error) {
 	return f.users, nil
 }
 
+// fakeHub records Disconnect and SendToUser calls so tests can assert
+// warning emission + disconnect-before-compact order.
+type fakeHub struct {
+	mu          sync.Mutex
+	disconnects []string                // userIDs disconnected
+	sends       map[string][]json.RawMessage // userID → frames sent
+}
+
+func newFakeHub() *fakeHub {
+	return &fakeHub{sends: map[string][]json.RawMessage{}}
+}
+func (h *fakeHub) Disconnect(userID, _ string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.disconnects = append(h.disconnects, userID)
+	return 1
+}
+func (h *fakeHub) SendToUser(userID string, raw []byte) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	h.sends[userID] = append(h.sends[userID], cp)
+	return 1
+}
+
+// fakeCompactor records compaction calls; configurable error.
+type fakeCompactor struct {
+	mu    sync.Mutex
+	calls []string // userIDs (we record sessionID since userIDs aren't passed here)
+	err   error
+}
+
+func (c *fakeCompactor) Run(_ context.Context, port int, sessionID, _ string, _ time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, sessionID)
+	_ = port
+	return c.err
+}
+func (c *fakeCompactor) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.calls)
+}
+
 func discardLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// fixedNow returns a time function pinned to `now`.
 func fixedNow(now int64) func() time.Time {
 	return func() time.Time { return time.Unix(now, 0).UTC() }
 }
 
-// TestGCStopsIdleSandboxes — three users at {-45m, -60m, -5m}; idleAfter=30m
-// → first two stopped, third skipped.
-func TestGCStopsIdleSandboxes(t *testing.T) {
-	const nowUnix = 1_700_000_000
-	users := []store.UserSummary{
-		{ID: "a", ContainerName: "homa-user-a", LastActiveAt: nowUnix - 45*60},
-		{ID: "b", ContainerName: "homa-user-b", LastActiveAt: nowUnix - 60*60},
-		{ID: "c", ContainerName: "homa-user-c", LastActiveAt: nowUnix - 5*60},
-	}
-	fm := newFakeManager([]string{"homa-user-a", "homa-user-b", "homa-user-c"})
-	gc := New(fm, &fakeLister{users: users}, 30*time.Minute, time.Hour, discardLog())
-	gc.SetNow(fixedNow(nowUnix))
-
-	if err := gc.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick: %v", err)
-	}
-	want := []string{"homa-user-a", "homa-user-b"}
-	if got := fm.stoppedSnapshot(); !equalStrings(got, want) {
-		t.Errorf("stopped: got %v, want %v", got, want)
+// sampleCfg — 60m idle, 60s warn window, 90s compact timeout. Pick interval
+// long enough that Tick() is the only thing driving state changes in tests.
+func sampleCfg() Config {
+	return Config{
+		IdleAfter:      60 * time.Minute,
+		WarningWindow:  60 * time.Second,
+		CompactTimeout: 90 * time.Second,
+		Interval:       time.Hour,
 	}
 }
 
-// TestGCSkipsFreshSandboxes — every user inside idleAfter → no Stop calls.
-func TestGCSkipsFreshSandboxes(t *testing.T) {
+func buildGC(t *testing.T, users []store.UserSummary, running []string, hub Hub, c Compactor) (*GC, *fakeManager) {
+	t.Helper()
+	fm := newFakeManager(running)
+	gc := New(fm, &fakeLister{users: users}, hub, c, sampleCfg(), discardLog())
+	return gc, fm
+}
+
+// TestCompactThenStopBeyondIdleAfter — user idle > IdleAfter triggers the
+// full sequence: hub.Disconnect → compactor.Run → sandbox.Stop. Asserts
+// all three fire and in that order via deterministic call counts.
+func TestCompactThenStopBeyondIdleAfter(t *testing.T) {
 	const nowUnix = 1_700_000_000
-	users := []store.UserSummary{
-		{ID: "a", ContainerName: "homa-user-a", LastActiveAt: nowUnix - 5*60},
-		{ID: "b", ContainerName: "homa-user-b", LastActiveAt: nowUnix - 10*60},
-	}
-	fm := newFakeManager([]string{"homa-user-a", "homa-user-b"})
-	gc := New(fm, &fakeLister{users: users}, 30*time.Minute, time.Hour, discardLog())
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		NousPort: 40000, NousSessionID: "sess-a", WorktreePath: "/work/a",
+		LastMessageAt: nowUnix - 70*60, // 70 min ago → past 60m IdleAfter
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{}
+	gc, fm := buildGC(t, users, []string{"homa-user-a"}, hub, cm)
 	gc.SetNow(fixedNow(nowUnix))
 
 	if err := gc.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick: %v", err)
+	}
+
+	if got := equalStrings(hub.disconnects, []string{"a"}); !got {
+		t.Errorf("hub.Disconnect calls: got %v, want [a]", hub.disconnects)
+	}
+	if cm.callCount() != 1 {
+		t.Errorf("compactor calls: got %d, want 1", cm.callCount())
+	}
+	if got := fm.stoppedSnapshot(); !equalStrings(got, []string{"homa-user-a"}) {
+		t.Errorf("stopped: got %v, want [homa-user-a]", got)
+	}
+}
+
+// TestWarningFrameInLastMinute — user idle within WarningWindow of IdleAfter
+// → hub.SendToUser invoked with a homa.idle_warning frame, no compact/stop.
+func TestWarningFrameInLastMinute(t *testing.T) {
+	const nowUnix = 1_700_000_000
+	// 59min30s ago → within 60s warning window of 60min IdleAfter.
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		LastMessageAt: nowUnix - (59*60 + 30),
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{}
+	gc, fm := buildGC(t, users, []string{"homa-user-a"}, hub, cm)
+	gc.SetNow(fixedNow(nowUnix))
+
+	if err := gc.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	frames := hub.sends["a"]
+	if len(frames) != 1 {
+		t.Fatalf("warning frames sent: got %d, want 1", len(frames))
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(frames[0], &probe); err != nil {
+		t.Fatalf("warning frame not JSON: %v", err)
+	}
+	if probe["type"] != "homa.idle_warning" {
+		t.Errorf("frame type: got %v, want homa.idle_warning", probe["type"])
+	}
+	if _, ok := probe["seconds_until_compact"]; !ok {
+		t.Error("frame missing seconds_until_compact")
+	}
+	// Compact / stop must NOT fire during the warning window.
+	if cm.callCount() != 0 {
+		t.Errorf("compactor fired during warning window: %d calls", cm.callCount())
 	}
 	if got := fm.stoppedSnapshot(); len(got) != 0 {
-		t.Errorf("stopped: got %v, want []", got)
+		t.Errorf("stop fired during warning window: %v", got)
+	}
+	if len(hub.disconnects) != 0 {
+		t.Errorf("disconnect fired during warning window: %v", hub.disconnects)
 	}
 }
 
-// TestGCToleratesStopError — Stop fails for one container; the next idle
-// user in the same tick is still processed.
-func TestGCToleratesStopError(t *testing.T) {
+// TestNoActionForFreshUser — user idle < (IdleAfter - WarningWindow):
+// no disconnect, no compact, no stop, no warning frame.
+func TestNoActionForFreshUser(t *testing.T) {
+	const nowUnix = 1_700_000_000
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		LastMessageAt: nowUnix - 5*60, // 5 min idle
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{}
+	gc, fm := buildGC(t, users, []string{"homa-user-a"}, hub, cm)
+	gc.SetNow(fixedNow(nowUnix))
+
+	if err := gc.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(hub.disconnects) != 0 || len(hub.sends) != 0 ||
+		cm.callCount() != 0 || len(fm.stoppedSnapshot()) != 0 {
+		t.Errorf("fresh user provoked action: dc=%v sends=%v compact=%d stop=%v",
+			hub.disconnects, hub.sends, cm.callCount(), fm.stoppedSnapshot())
+	}
+}
+
+// TestStopProceedsWhenCompactFails — compactor.Run errors → Stop still
+// fires (best-effort: compaction failure shouldn't pin a container open).
+func TestStopProceedsWhenCompactFails(t *testing.T) {
+	const nowUnix = 1_700_000_000
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		NousPort: 40000, NousSessionID: "sess-a", WorktreePath: "/work/a",
+		LastMessageAt: nowUnix - 70*60,
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{err: errors.New("session busy")}
+	gc, fm := buildGC(t, users, []string{"homa-user-a"}, hub, cm)
+	gc.SetNow(fixedNow(nowUnix))
+
+	if err := gc.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if cm.callCount() != 1 {
+		t.Errorf("compactor not called: %d", cm.callCount())
+	}
+	if got := fm.stoppedSnapshot(); !equalStrings(got, []string{"homa-user-a"}) {
+		t.Errorf("stop did not proceed after compact failure: %v", got)
+	}
+}
+
+// TestStoppedContainerSkipped — IsRunning=false → no Stop/compact even if
+// idle. Avoids redundant work when GC respawned-and-removed concurrently.
+func TestStoppedContainerSkipped(t *testing.T) {
+	const nowUnix = 1_700_000_000
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		LastMessageAt: nowUnix - 70*60,
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{}
+	gc, fm := buildGC(t, users, nil, hub, cm) // running: empty
+	gc.SetNow(fixedNow(nowUnix))
+
+	if err := gc.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if cm.callCount() != 0 || len(fm.stoppedSnapshot()) != 0 || len(hub.disconnects) != 0 {
+		t.Errorf("acted on stopped container: dc=%v compact=%d stop=%v",
+			hub.disconnects, cm.callCount(), fm.stoppedSnapshot())
+	}
+}
+
+// TestStopToleratesError — Stop fails for one user; other idle users in
+// the same tick still get processed (each path is independent).
+func TestStopToleratesError(t *testing.T) {
 	const nowUnix = 1_700_000_000
 	users := []store.UserSummary{
-		{ID: "a", ContainerName: "homa-user-a", LastActiveAt: nowUnix - 45*60},
-		{ID: "b", ContainerName: "homa-user-b", LastActiveAt: nowUnix - 50*60},
+		{ID: "a", ContainerName: "homa-user-a", LastMessageAt: nowUnix - 70*60,
+			NousPort: 40000, NousSessionID: "a", WorktreePath: "/w/a"},
+		{ID: "b", ContainerName: "homa-user-b", LastMessageAt: nowUnix - 80*60,
+			NousPort: 40002, NousSessionID: "b", WorktreePath: "/w/b"},
 	}
-	fm := newFakeManager([]string{"homa-user-a", "homa-user-b"})
+	hub := newFakeHub()
+	cm := &fakeCompactor{}
+	gc, fm := buildGC(t, users, []string{"homa-user-a", "homa-user-b"}, hub, cm)
 	fm.stopErrs["homa-user-a"] = errors.New("podman: connection refused")
-	gc := New(fm, &fakeLister{users: users}, 30*time.Minute, time.Hour, discardLog())
 	gc.SetNow(fixedNow(nowUnix))
 
 	if err := gc.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
-	// homa-user-a's Stop errored → not in `stopped` list. homa-user-b's
-	// Stop succeeded.
-	want := []string{"homa-user-b"}
-	if got := fm.stoppedSnapshot(); !equalStrings(got, want) {
-		t.Errorf("stopped: got %v, want %v", got, want)
+	// Both compacted; b stopped successfully, a's stop errored.
+	if cm.callCount() != 2 {
+		t.Errorf("compactor calls: got %d, want 2", cm.callCount())
 	}
-}
-
-// TestGCSkipsStoppedContainers — container already not running → Stop NOT called.
-func TestGCSkipsStoppedContainers(t *testing.T) {
-	const nowUnix = 1_700_000_000
-	users := []store.UserSummary{
-		{ID: "a", ContainerName: "homa-user-a", LastActiveAt: nowUnix - 45*60},
-	}
-	fm := newFakeManager(nil) // nothing running
-	gc := New(fm, &fakeLister{users: users}, 30*time.Minute, time.Hour, discardLog())
-	gc.SetNow(fixedNow(nowUnix))
-
-	if err := gc.Tick(context.Background()); err != nil {
-		t.Fatalf("Tick: %v", err)
-	}
-	if got := fm.stoppedSnapshot(); len(got) != 0 {
-		t.Errorf("stopped: got %v, want []", got)
+	if got := fm.stoppedSnapshot(); !equalStrings(got, []string{"homa-user-b"}) {
+		t.Errorf("stopped: got %v, want [homa-user-b]", got)
 	}
 }
 

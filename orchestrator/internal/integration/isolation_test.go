@@ -96,7 +96,7 @@ func newRig(t *testing.T) *rig {
 
 	mux := http.NewServeMux()
 	authSvc.Register(mux)
-	proxy.Register(mux, st, authSvc, log)
+	proxy.Register(mux, st, authSvc, proxy.NewHub(log), log)
 
 	orchSrv := httptest.NewServer(mux)
 	t.Cleanup(orchSrv.Close)

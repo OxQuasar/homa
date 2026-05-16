@@ -26,6 +26,13 @@
   // the post-turn total is accurate.
   let contextStats = $state<ContextStats | null>(null);
 
+  // Idle-compaction warning. Orchestrator sends homa.idle_warning frames
+  // during the last minute before the sandbox is compacted-and-stopped.
+  // We surface the count in the header; clears on next user message
+  // (server resets the idle clock) or on WS close (forced disconnect at
+  // the actual compaction).
+  let idleWarningSeconds = $state<number | null>(null);
+
   // Formatters for the header pill. "12.3k" rather than 12345 so it
   // stays compact across orders of magnitude.
   function formatTokens(n: number): string {
@@ -130,6 +137,13 @@
         if (ev.stats) contextStats = ev.stats;
         break;
 
+      case 'homa.idle_warning':
+        // Orchestrator-emitted: idle compaction is about to fire.
+        // Re-rendered on every gc tick during the warning window, so
+        // we just clobber the previous value.
+        idleWarningSeconds = ev.seconds_until_compact ?? 0;
+        break;
+
       case 'messages_loaded':
         // Hydrate chat from persisted history. Replaces whatever's in
         // session.messages — nous's view of the session is authoritative.
@@ -192,6 +206,11 @@
   function onSend(text: string) {
     session.messages.push({ role: 'user', text });
     session.status = 'running';
+    // Any user message resets the server-side idle clock, so the
+    // warning banner (if showing) becomes stale immediately. Clear it
+    // optimistically; if the orchestrator's next tick still considers
+    // the user idle for some reason, it'll re-set.
+    idleWarningSeconds = null;
     ws?.send({ type: 'run', prompt: text });
   }
 
@@ -230,6 +249,11 @@
             <span class="ctx-pct">{contextDisplay.pct}%</span>
           </span>
         {/if}
+      {/if}
+      {#if idleWarningSeconds !== null}
+        <span class="idle-warn" title="Send a message to defer" aria-live="polite">
+          ⚠ Idle compaction in {idleWarningSeconds}s
+        </span>
       {/if}
       {#if session.status === 'running'}
         <span class="working" title="LLM is working" aria-live="polite">
@@ -296,6 +320,21 @@
   .ctx-pct { opacity: 0.7; font-size: 0.68rem; }
   .ctx-warm { background: #fff4e0; color: #8a5a00; }
   .ctx-hot  { background: #ffe0e0; color: #a00; }
+
+  /* Idle-compaction warning pill — shown during the last minute before
+     the orchestrator stops the user's sandbox. Amber + warning glyph;
+     pulses gently to draw the eye without being obnoxious. */
+  .idle-warn {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.1rem 0.5rem; border-radius: 3px;
+    background: #fff0d0; color: #6a4a00;
+    font-size: 0.72rem; font-weight: 600;
+    animation: idle-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes idle-pulse {
+    0%, 100% { background: #fff0d0; }
+    50%      { background: #ffe2a8; }
+  }
 
   /* "working" pulse — peripheral indicator visible even when the chat is
      scrolled, so the user doesn't have to look at the message list to know

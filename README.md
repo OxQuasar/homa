@@ -184,18 +184,34 @@ podman volume export …   # per-user chat history (one volume per user)
 
 User identities + their sites + their conversations are independent files / volumes; you can back up any subset.
 
-### Tune the idle-GC cycle
+### Tune the idle lifecycle (compact-then-stop)
+
+When a user is idle (`now - last_message_at > idle_after_minutes`), the
+orchestrator force-disconnects their browser, runs a full nous compaction
+in the sandbox, then stops the container. Persistent volume keeps the
+compacted history; their next login spawns a fresh container with a
+smaller starting context.
+
+`last_message_at` is bumped only by **actual user activity**: login + each
+`run` request observed by the WS proxy. The WS keepalive ticker bumps
+`last_active_at` instead — that field is metadata, it doesn't extend the
+60-min idle window.
+
+The editor shows a "Idle compaction in Ns" banner during the last
+`idle_warning_seconds` before the threshold.
 
 `~/homa/config.json`:
 
 ```json
 {
-  "idle_after_minutes": 30,        // 0 → default 30; negative disables GC
-  "gc_interval_seconds": 60        // 0 → default 60; negative disables GC
+  "idle_after_minutes": 60,         // 0 → default 60; negative disables
+  "gc_interval_seconds": 60,        // ticker cadence; 0 → default 60
+  "idle_warning_seconds": 60,       // lead time for the warning banner
+  "compact_timeout_seconds": 90     // bound on the full_compact round-trip
 }
 ```
 
-Restart orchestrator to apply. Lower values give faster cleanup during testing; production default keeps containers warm long enough that an editor reload after a coffee break doesn't pay the respawn cost.
+Restart orchestrator to apply.
 
 ### Restart orchestrator
 

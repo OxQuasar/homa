@@ -228,15 +228,19 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bump last_active_at BEFORE EnsureRunning so the GC can't see a stale
-	// timestamp mid-bring-up and stop the freshly-started container. The
-	// user has shown intent (valid bcrypt match) — that's the moment of
-	// "activity" we want recorded. If EnsureRunning later fails, the row
-	// is still fresh; GC's IsRunning pre-check makes the eventual Stop a
-	// no-op anyway.
+	// Bump last_active_at AND last_message_at BEFORE EnsureRunning so the
+	// lifecycle can't see a stale timestamp mid-bring-up and stop the
+	// freshly-started container. The user has shown intent (valid bcrypt
+	// match) — that's the moment of activity we want recorded. Login
+	// counts as engagement → it resets the idle-compact clock too.
+	// (The WS keepalive ticker only bumps last_active_at; only login and
+	// actual messages bump last_message_at.)
 	now := time.Now().UTC().Unix()
 	if err := s.store.UpdateLastActive(r.Context(), u.ID, now); err != nil {
 		s.log.Error("update last_active failed", "err", err)
+	}
+	if err := s.store.UpdateLastMessage(r.Context(), u.ID, now); err != nil {
+		s.log.Error("update last_message failed", "err", err)
 	}
 
 	// Bring the user's sandbox back up if the GC stopped it. Non-fatal —

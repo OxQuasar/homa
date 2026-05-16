@@ -14,6 +14,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -44,16 +45,20 @@ const (
 
 // Register mounts the cookie-gated /ws reverse proxy onto mux. The auth
 // service supplies both RequireAuth and the user-on-context contract.
-func Register(mux *http.ServeMux, st *store.Store, authSvc *auth.Service, log *slog.Logger) {
+// hub may be nil (legacy / test paths that don't need force-disconnect or
+// server-push); when non-nil, Register associates every browser conn with
+// its userID so lifecycle can act on them.
+func Register(mux *http.ServeMux, st *store.Store, authSvc *auth.Service, hub *Hub, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := &handler{store: st, log: log}
+	h := &handler{store: st, hub: hub, log: log}
 	mux.Handle("GET /ws", authSvc.RequireAuth(http.HandlerFunc(h.serve)))
 }
 
 type handler struct {
 	store *store.Store
+	hub   *Hub // may be nil — register/unregister no-op if so
 	log   *slog.Logger
 }
 
@@ -107,9 +112,19 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	h.bumpActive(connCtx, u.ID)
 	go h.lastActiveTicker(connCtx, u.ID)
 
+	// Register with the Hub so lifecycle can force-disconnect / push
+	// frames. Unregister fires when serve() returns (either side closed).
+	if h.hub != nil {
+		h.hub.Register(u.ID, browser)
+		defer h.hub.Unregister(u.ID, browser)
+	}
+
 	errCh := make(chan error, 2)
+	// browser → upstream uses the peeking variant so it can bump
+	// last_message_at on user `run` requests. upstream → browser passes
+	// frames opaquely.
+	go func() { errCh <- copyBrowserToUpstream(connCtx, upstream, browser, h, u.ID) }()
 	go func() { errCh <- copyMessages(connCtx, browser, upstream) }()
-	go func() { errCh <- copyMessages(connCtx, upstream, browser) }()
 	<-errCh
 	cancel()
 
@@ -136,6 +151,43 @@ func copyMessages(ctx context.Context, dst, src *websocket.Conn) error {
 	}
 }
 
+// copyBrowserToUpstream is copyMessages plus a peek for `{"type":"run"}`
+// frames — those count as "actual user messages" and bump
+// last_message_at. Other types (get_messages, context_stats, stop, etc.)
+// are not user-sent content; they pass through opaquely without bumping.
+// The peek is cheap (single JSON unmarshal into a 1-field struct) and
+// errors are silently ignored: a malformed frame is upstream's problem
+// to reject.
+func copyBrowserToUpstream(ctx context.Context, upstream, browser *websocket.Conn, h *handler, userID string) error {
+	for {
+		msgType, data, err := browser.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if msgType == websocket.MessageText && isRunRequest(data) {
+			h.bumpMessage(ctx, userID)
+		}
+		if err := upstream.Write(ctx, msgType, data); err != nil {
+			return err
+		}
+	}
+}
+
+// runProbe is the minimal shape the peek needs. Sharing this struct
+// across calls would require sync; allocating per frame is cheap enough
+// (no map / slice fields) that we just declare it locally below.
+type runProbe struct {
+	Type string `json:"type"`
+}
+
+func isRunRequest(data []byte) bool {
+	var p runProbe
+	if err := json.Unmarshal(data, &p); err != nil {
+		return false
+	}
+	return p.Type == "run"
+}
+
 // lastActiveTicker periodically refreshes users.last_active_at while the WS
 // is open. Each tick uses a detached context with a short timeout so a slow
 // DB doesn't block the proxy loop.
@@ -157,5 +209,17 @@ func (h *handler) bumpActive(ctx context.Context, userID string) {
 	defer cancel()
 	if err := h.store.UpdateLastActive(updateCtx, userID, time.Now().UTC().Unix()); err != nil {
 		h.log.Warn("UpdateLastActive failed", "user_id", userID, "err", err)
+	}
+}
+
+// bumpMessage bumps last_message_at — fires on every `run` request the
+// browser sends. Drives the compact-on-idle lifecycle; explicitly does
+// NOT fire on the WS keepalive ticker so a "tab left open" user still
+// rolls into the cold-and-compacted state at 60 min.
+func (h *handler) bumpMessage(ctx context.Context, userID string) {
+	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+	defer cancel()
+	if err := h.store.UpdateLastMessage(updateCtx, userID, time.Now().UTC().Unix()); err != nil {
+		h.log.Warn("UpdateLastMessage failed", "user_id", userID, "err", err)
 	}
 }

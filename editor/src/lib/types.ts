@@ -65,7 +65,9 @@ export type EventType =
   | 'tool_done'
   | 'run_done'
   | 'prompt_queued'
-  | 'permission_request';
+  | 'permission_request'
+  | 'context_stats'
+  | 'homa.idle_warning'; // synthetic — emitted by orchestrator, not nous
 
 export interface Event {
   type: EventType;
@@ -79,11 +81,31 @@ export interface Event {
   output?: string;
   is_error?: boolean;
   err_str?: string;
+  stats?: ContextStats; // populated on EventContextStats
+  // homa.idle_warning: how many seconds until the lifecycle compacts +
+  // stops the user's sandbox. Sent every gc tick the user is inside
+  // the warning window (last minute by default).
+  seconds_until_compact?: number;
+}
+
+// ContextStats — payload of EventContextStats; tokens broken down by
+// section of the prompt. Sent in response to a context_stats request.
+export interface ContextStats {
+  context_window: number;
+  prompt: number;
+  tools: number;
+  context_files: number;
+  skills: number;
+  messages: number;
 }
 
 // --- Wire requests ---
 
-export type RequestType = 'run' | 'stop' | 'get_messages';
+export type RequestType =
+  | 'run'
+  | 'stop'
+  | 'get_messages'
+  | 'context_stats';
 
 export interface Request {
   type: RequestType;

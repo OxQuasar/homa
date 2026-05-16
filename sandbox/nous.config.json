@@ -9,7 +9,8 @@
       "thinking": "adaptive",
       "thinking_display": "summarized",
       "web_search": "anthropic",
-      "web_search_max_uses": 10
+      "web_search_max_uses": 10,
+      "beta_headers": ["context-1m-2025-08-07"]
     }
   },
   "permissions": { "yolo": true },

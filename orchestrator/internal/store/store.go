@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -38,7 +39,8 @@ type User struct {
 	PreviewServePort int
 	NousSessionID    string // pinned nous session id (sent in Hello)
 	CreatedAt        int64  // unix seconds UTC
-	LastActiveAt     int64  // unix seconds UTC
+	LastActiveAt     int64  // bumped by WS keepalive (proxy ticker)
+	LastMessageAt    int64  // bumped only on user `run` requests / login; drives idle-compact lifecycle
 }
 
 // WebSession represents a single browser session token.
@@ -79,9 +81,8 @@ func Open(path string) (*Store, error) {
 }
 
 // migrate runs forward-only schema migrations for databases predating
-// nous_session_id (and any future additive changes). Each step uses
-// IF NOT EXISTS / "duplicate column" tolerance so re-running Open is a
-// no-op once the column is present.
+// new columns. Each step uses tableColumns to detect prior application
+// so re-running Open is a no-op once a column is present.
 func migrate(db *sql.DB) error {
 	cols, err := tableColumns(db, "users")
 	if err != nil {
@@ -90,6 +91,22 @@ func migrate(db *sql.DB) error {
 	if !cols["nous_session_id"] {
 		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN nous_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add users.nous_session_id: %w", err)
+		}
+	}
+	if !cols["last_message_at"] {
+		// Adds the column with DEFAULT 0, then seeds existing rows so they
+		// don't appear "idle for years" to the compact-on-idle lifecycle.
+		// COALESCE(NULLIF(last_active_at, 0), ?) prefers an existing
+		// last_active_at; falls back to current time. Either way the
+		// row is a plausible starting point for its 60-min idle window.
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN last_message_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add users.last_message_at: %w", err)
+		}
+		nowTs := time.Now().UTC().Unix()
+		if _, err := db.Exec(
+			`UPDATE users SET last_message_at = COALESCE(NULLIF(last_active_at, 0), ?) WHERE last_message_at = 0`,
+			nowTs); err != nil {
+			return fmt.Errorf("backfill users.last_message_at: %w", err)
 		}
 	}
 	return nil
@@ -120,22 +137,39 @@ func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 // CreateUser inserts a new user. Caller is responsible for hashing passwords
-// and supplying provisioned fields.
+// and supplying provisioned fields. If LastMessageAt is left zero, it's
+// seeded with CreatedAt so the user's 60-min idle window starts at signup
+// (not at unix epoch).
 func (s *Store) CreateUser(ctx context.Context, u User) error {
+	if u.LastMessageAt == 0 {
+		u.LastMessageAt = u.CreatedAt
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (
 			id, email, password_hash, name,
 			branch_name, worktree_path, container_name,
 			nous_port, preview_port, preview_serve_port,
 			nous_session_id,
-			created_at, last_active_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, last_active_at, last_message_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Email, u.PasswordHash, u.Name,
 		u.BranchName, u.WorktreePath, u.ContainerName,
 		u.NousPort, u.PreviewPort, u.PreviewServePort,
 		u.NousSessionID,
-		u.CreatedAt, u.LastActiveAt,
+		u.CreatedAt, u.LastActiveAt, u.LastMessageAt,
 	)
+	return err
+}
+
+// UpdateLastMessage bumps last_message_at to ts. Called on:
+//   - successful login (auth.Login)
+//   - each user `run` request observed by the WS proxy
+// NOT called by the WS keepalive ticker; that bumps last_active_at instead.
+// The split makes the compact-on-idle lifecycle key off "real messaging
+// activity" rather than "tab is open."
+func (s *Store) UpdateLastMessage(ctx context.Context, userID string, ts int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET last_message_at = ? WHERE id = ?`, ts, userID)
 	return err
 }
 
@@ -217,18 +251,25 @@ func (s *Store) AllUserPorts(ctx context.Context) (hostPorts, servePorts []int, 
 	return hostPorts, servePorts, nil
 }
 
-// UserSummary is the minimal projection used by the GC loop — keeps the
-// query cheap and avoids dragging password_hash etc. across the GC tick.
+// UserSummary is the minimal projection used by the lifecycle loop —
+// keeps the query cheap and avoids dragging password_hash etc. across
+// the tick.
 type UserSummary struct {
-	ID            string
-	ContainerName string
-	LastActiveAt  int64 // unix seconds UTC
+	ID             string
+	ContainerName  string
+	NousPort       int   // needed when lifecycle dials nous for compaction
+	NousSessionID  string
+	WorktreePath   string
+	LastActiveAt   int64 // unix seconds UTC; bumped by WS keepalive
+	LastMessageAt  int64 // unix seconds UTC; bumped on actual user messages
 }
 
-// ListUsers returns the (ID, container_name, last_active_at) projection
-// for every user. Used by lifecycle.GC.
+// ListUsers returns the projection used by lifecycle.GC: container name +
+// nous ports/session for compaction dialing + both timestamps.
 func (s *Store) ListUsers(ctx context.Context) ([]UserSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, container_name, last_active_at FROM users`)
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		id, container_name, nous_port, nous_session_id, worktree_path,
+		last_active_at, last_message_at FROM users`)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +277,10 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserSummary, error) {
 	var out []UserSummary
 	for rows.Next() {
 		var u UserSummary
-		if err := rows.Scan(&u.ID, &u.ContainerName, &u.LastActiveAt); err != nil {
+		if err := rows.Scan(
+			&u.ID, &u.ContainerName, &u.NousPort, &u.NousSessionID, &u.WorktreePath,
+			&u.LastActiveAt, &u.LastMessageAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -273,7 +317,7 @@ const userSelect = `SELECT id, email, password_hash, name,
 	branch_name, worktree_path, container_name,
 	nous_port, preview_port, preview_serve_port,
 	nous_session_id,
-	created_at, last_active_at FROM users`
+	created_at, last_active_at, last_message_at FROM users`
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	var u User
@@ -283,7 +327,7 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 		&u.BranchName, &u.WorktreePath, &u.ContainerName,
 		&u.NousPort, &u.PreviewPort, &u.PreviewServePort,
 		&u.NousSessionID,
-		&u.CreatedAt, &u.LastActiveAt,
+		&u.CreatedAt, &u.LastActiveAt, &u.LastMessageAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

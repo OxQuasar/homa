@@ -38,8 +38,14 @@ const (
 	// surface.
 	defaultReadinessTimeoutSec  = 120
 	defaultReadinessIntervalMS  = 500
-	defaultIdleAfterMinutes     = 30 // mvp.md §16
-	defaultGCIntervalSeconds    = 60 // mvp.md §16
+	// Lifecycle thresholds — the compact-then-stop loop. IdleAfter was
+	// 30 before the compaction step was added; bumped to 60 so the user
+	// has a full hour of message-idleness before their context is
+	// compacted out from under them.
+	defaultIdleAfterMinutes      = 60
+	defaultGCIntervalSeconds     = 60
+	defaultIdleWarningSeconds    = 60
+	defaultCompactTimeoutSeconds = 90
 )
 
 // Config is the orchestrator's runtime configuration.
@@ -148,18 +154,28 @@ type Config struct {
 	// port pool (40000+) so they can't collide. Default: 40500.
 	MainSiteHostPort int `json:"main_site_host_port"`
 
-	// IdleAfterMinutes is the inactivity window before GC stops a user's
-	// sandbox (mvp.md §16). Unset / 0 in JSON → default 30 (applyDefaults
-	// can't distinguish "field missing" from "zero" in plain ints).
-	// To explicitly disable the GC, set this to a negative value; main.go
-	// gates the GC goroutine on `> 0`. We chose this over a *int pointer
-	// dance because the only consumer is the startup gate — not worth the
-	// nil-check tax everywhere these are read.
+	// IdleAfterMinutes is the inactivity window before the lifecycle
+	// compacts the user's nous context and stops their sandbox. Measured
+	// against users.last_message_at (NOT the WS keepalive ticker), so a
+	// "tab left open with no messages" rolls into the cold-and-compacted
+	// state. Unset / 0 in JSON → default 60. Negative disables the
+	// lifecycle entirely.
 	IdleAfterMinutes int `json:"idle_after_minutes"`
 
-	// GCIntervalSeconds is how often the GC loop ticks. Same defaulting
-	// semantics as IdleAfterMinutes — negative disables, 0 → default 60.
+	// GCIntervalSeconds is how often the lifecycle loop ticks. Same
+	// defaulting semantics as IdleAfterMinutes — negative disables,
+	// 0 → default 60.
 	GCIntervalSeconds int `json:"gc_interval_seconds"`
+
+	// IdleWarningSeconds is the lead time before idle compaction during
+	// which the orchestrator pushes a homa.idle_warning frame to the
+	// browser so the editor can surface a banner. 0 → default 60.
+	IdleWarningSeconds int `json:"idle_warning_seconds"`
+
+	// CompactTimeoutSeconds bounds how long the lifecycle waits for the
+	// full_compact round-trip against the user's nous before giving up
+	// and proceeding to Stop. 0 → default 90.
+	CompactTimeoutSeconds int `json:"compact_timeout_seconds"`
 }
 
 // Load reads the config from path. If path is empty or missing, returns a
@@ -233,6 +249,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.GCIntervalSeconds == 0 {
 		cfg.GCIntervalSeconds = defaultGCIntervalSeconds
+	}
+	if cfg.IdleWarningSeconds == 0 {
+		cfg.IdleWarningSeconds = defaultIdleWarningSeconds
+	}
+	if cfg.CompactTimeoutSeconds == 0 {
+		cfg.CompactTimeoutSeconds = defaultCompactTimeoutSeconds
 	}
 	// UserConfigsDir defaults to "configs" *under DataDir* (so it ends up
 	// at e.g. data/configs/). Resolved to absolute in main.go.

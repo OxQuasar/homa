@@ -133,7 +133,8 @@ func run(configPath string, log *slog.Logger) error {
 	// mainsite catch-all only fires for GETs that didn't match a more
 	// specific pattern.
 	authSvc.Register(mux)
-	proxy.Register(mux, st, authSvc, log)
+	hub := proxy.NewHub(log)
+	proxy.Register(mux, st, authSvc, hub, log)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)
@@ -179,15 +180,22 @@ func run(configPath string, log *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start the idle-sandbox GC if podman is on and the GC isn't explicitly
-	// disabled. Best-effort background task; shares root ctx so it exits
-	// on shutdown.
+	// Start the lifecycle loop: per-user idle compaction + container stop.
+	// Best-effort background task; shares root ctx so it exits on shutdown.
+	// Gated on podman + positive thresholds so the stub provisioner path
+	// and explicit disable both skip cleanly.
 	if cfg.UsePodman && cfg.IdleAfterMinutes > 0 && cfg.GCIntervalSeconds > 0 {
 		gc := lifecycle.New(
 			sandbox.NewPodmanManager(cfg.PodmanBin, sandbox.ExecRunner{}),
 			st,
-			time.Duration(cfg.IdleAfterMinutes)*time.Minute,
-			time.Duration(cfg.GCIntervalSeconds)*time.Second,
+			hub,
+			lifecycle.CompactClient{},
+			lifecycle.Config{
+				IdleAfter:      time.Duration(cfg.IdleAfterMinutes) * time.Minute,
+				WarningWindow:  time.Duration(cfg.IdleWarningSeconds) * time.Second,
+				CompactTimeout: time.Duration(cfg.CompactTimeoutSeconds) * time.Second,
+				Interval:       time.Duration(cfg.GCIntervalSeconds) * time.Second,
+			},
 			log,
 		)
 		go func() {
