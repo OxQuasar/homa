@@ -181,6 +181,17 @@ func buildProvisioner(cfg *config.Config, branchesDir string, ports *provision.P
 
 	credsPath := resolveClaudeCredentialsPath(cfg.ClaudeCredentialsPath, log)
 
+	userConfigsDir, err := filepath.Abs(cfg.UserConfigsDir)
+	if err != nil {
+		log.Warn("abs UserConfigsDir failed; per-user configs disabled", "err", err)
+		userConfigsDir = ""
+	}
+	nousConfigTemplate, err := filepath.Abs(cfg.NousConfigTemplate)
+	if err != nil {
+		log.Warn("abs NousConfigTemplate failed", "err", err)
+		nousConfigTemplate = ""
+	}
+
 	runner := sandbox.ExecRunner{}
 	pp := &provision.PodmanProvisioner{
 		Worktree:              worktree.New(cfg.GitBin, runner),
@@ -196,13 +207,17 @@ func buildProvisioner(cfg *config.Config, branchesDir string, ports *provision.P
 		CPULimit:              cfg.ContainerCPUs,
 		AnthropicAPIKey:       apiKey,
 		ClaudeCredentialsPath: credsPath,
+		UserConfigsDir:        userConfigsDir,
+		NousConfigTemplate:    nousConfigTemplate,
 		ReadinessTimeout:      time.Duration(cfg.ReadinessTimeoutSec) * time.Second,
 		ReadinessInterval:     time.Duration(cfg.ReadinessIntervalMS) * time.Millisecond,
 		Log:                   log,
 	}
 	log.Info("provisioner", "kind", "podman",
 		"image", cfg.ImageRef, "site_template", siteTemplateDir, "branches", branchesDir,
-		"claude_creds", credsPath)
+		"claude_creds", credsPath,
+		"user_configs_dir", userConfigsDir,
+		"nous_config_template", nousConfigTemplate)
 	return pp
 }
 

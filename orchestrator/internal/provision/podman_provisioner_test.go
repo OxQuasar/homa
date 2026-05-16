@@ -348,6 +348,81 @@ func TestEnsureRunningExtraMounts(t *testing.T) {
 	}
 }
 
+// TestUserConfigSeedAndMount — first provision creates
+// <UserConfigsDir>/<id>/config.json from template; subsequent calls
+// reuse the existing file (don't overwrite); the file is bind-mounted
+// read-only at /usr/local/bin/config.json on every spec.
+func TestUserConfigSeedAndMount(t *testing.T) {
+	dir := t.TempDir()
+	tmpl := dir + "/tmpl.json"
+	templateBody := []byte(`{"providers":{"anthropic":{"default_model":"opus"}}}`)
+	if err := os.WriteFile(tmpl, templateBody, 0o644); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+
+	pp, _, _, sb, _ := newRig(t)
+	pp.UserConfigsDir = dir + "/configs"
+	pp.NousConfigTemplate = tmpl
+
+	// First provision → file gets created, mount present.
+	if _, err := pp.Provision(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	want := pp.UserConfigsDir + "/abcd1234/config.json"
+	m := findMount(sb.lastSpec.Mounts, "/usr/local/bin/config.json")
+	if m == nil {
+		t.Fatalf("user config mount missing: %+v", sb.lastSpec.Mounts)
+	}
+	if m.Src != want {
+		t.Errorf("mount Src: got %q, want %q", m.Src, want)
+	}
+	if !m.ReadOnly {
+		t.Error("user config mount must be ReadOnly")
+	}
+	got, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("seeded file unreadable: %v", err)
+	}
+	if string(got) != string(templateBody) {
+		t.Errorf("seeded contents: got %s, want %s", got, templateBody)
+	}
+
+	// Admin edit: change the file. Subsequent EnsureRunning must NOT
+	// overwrite — the file is the source of truth once it exists.
+	const admin = `{"providers":{"anthropic":{"default_model":"haiku"}}}`
+	if err := os.WriteFile(want, []byte(admin), 0o644); err != nil {
+		t.Fatalf("admin edit: %v", err)
+	}
+	pp.Users = &fakeUserLookup{users: map[string]*store.User{"abcd1234": sampleUser()}}
+	if err := pp.EnsureRunning(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("EnsureRunning: %v", err)
+	}
+	got2, _ := os.ReadFile(want)
+	if string(got2) != admin {
+		t.Errorf("admin edit clobbered: got %s, want %s", got2, admin)
+	}
+	m2 := findMount(sb.lastSpec.Mounts, "/usr/local/bin/config.json")
+	if m2 == nil || m2.Src != want {
+		t.Errorf("EnsureRunning lost user config mount: %+v", sb.lastSpec.Mounts)
+	}
+}
+
+// TestUserConfigDisabled — empty UserConfigsDir → no mount, image-baked
+// default applies. Existing fields (nous data volume) still present.
+func TestUserConfigDisabled(t *testing.T) {
+	pp, _, _, sb, _ := newRig(t)
+	pp.UserConfigsDir = ""
+	if _, err := pp.Provision(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if findMount(sb.lastSpec.Mounts, "/usr/local/bin/config.json") != nil {
+		t.Errorf("user config mount present despite UserConfigsDir=\"\": %+v", sb.lastSpec.Mounts)
+	}
+	if findMount(sb.lastSpec.Mounts, "/root/.nous") == nil {
+		t.Errorf("nous data volume should still be mounted: %+v", sb.lastSpec.Mounts)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -7,9 +7,15 @@
       "compaction_model": "claude-haiku-4-5-20251001",
       "effort": "high",
       "thinking": "adaptive",
-      "thinking_display": "summarized"
+      "thinking_display": "summarized",
+      "web_search": "anthropic",
+      "web_search_max_uses": 10
     }
   },
   "permissions": { "yolo": true },
+  "bash": {
+    "foreground_timeout": 5,
+    "background_timeout": 1180
+  },
   "transport": { "ws_listen": "0.0.0.0:9000" }
 }

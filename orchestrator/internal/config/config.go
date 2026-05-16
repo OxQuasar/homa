@@ -22,6 +22,10 @@ const (
 	defaultGitBin               = "git"
 	defaultContainerMemory      = "2g"
 	defaultContainerCPUs        = "2"
+	// Per-user nous configs live under DataDir/configs/<userid>/config.json
+	// and the template is shipped with the sandbox source.
+	defaultUserConfigsRel       = "configs"
+	defaultNousConfigTemplate   = "sandbox/nous.config.json"
 	// 30s was too tight for first-run signups: an empty worktree triggers
 	// `npm install` inside the container (≈30–60s depending on network +
 	// disk). Subsequent EnsureRunning calls reuse node_modules from the
@@ -113,6 +117,21 @@ type Config struct {
 	// token refreshes for free). Set to "-" to disable explicitly.
 	ClaudeCredentialsPath string `json:"claude_credentials_path"`
 
+	// UserConfigsDir is the host directory holding per-user nous configs.
+	// Path layout: <UserConfigsDir>/<userid>/config.json. Each file is
+	// bind-mounted read-only into its sandbox at /usr/local/bin/config.json,
+	// shadowing the image-baked default. New users get the file seeded
+	// from NousConfigTemplate at signup. Admin-controlled — users can't
+	// edit (RO mount), only operators with host access can. Empty
+	// disables per-user configs entirely (falls back to baked image).
+	// Default: "configs" (resolved relative to DataDir → absolute path).
+	UserConfigsDir string `json:"user_configs_dir"`
+
+	// NousConfigTemplate is the path to the per-user nous config template
+	// copied to <UserConfigsDir>/<userid>/config.json on first provision.
+	// Default: "sandbox/nous.config.json" (resolved relative to CWD).
+	NousConfigTemplate string `json:"nous_config_template"`
+
 	// IdleAfterMinutes is the inactivity window before GC stops a user's
 	// sandbox (mvp.md §16). Unset / 0 in JSON → default 30 (applyDefaults
 	// can't distinguish "field missing" from "zero" in plain ints).
@@ -198,6 +217,14 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.GCIntervalSeconds == 0 {
 		cfg.GCIntervalSeconds = defaultGCIntervalSeconds
+	}
+	// UserConfigsDir defaults to "configs" *under DataDir* (so it ends up
+	// at e.g. data/configs/). Resolved to absolute in main.go.
+	if cfg.UserConfigsDir == "" {
+		cfg.UserConfigsDir = filepath.Join(cfg.DataDir, defaultUserConfigsRel)
+	}
+	if cfg.NousConfigTemplate == "" {
+		cfg.NousConfigTemplate = defaultNousConfigTemplate
 	}
 }
 

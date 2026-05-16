@@ -57,10 +57,26 @@ type PodmanProvisioner struct {
 	// the OAuth chain (and inherits host token refreshes automatically).
 	// Empty / missing → fall back to env-var-only auth.
 	ClaudeCredentialsPath string
-	ReadinessTimeout      time.Duration
-	ReadinessInterval     time.Duration
-	Log                   *slog.Logger
+	// UserConfigsDir is an absolute host directory holding per-user nous
+	// configs. Provision/EnsureRunning ensure
+	// <UserConfigsDir>/<userid>/config.json exists (seeded from
+	// NousConfigTemplate on first contact), then bind-mount it read-only
+	// into the sandbox at /usr/local/bin/config.json — shadowing the
+	// image-baked default. Empty disables per-user configs (the
+	// image-default applies). Admin edits the host file; users can't.
+	UserConfigsDir string
+	// NousConfigTemplate is the absolute host path to a nous config that
+	// gets copied into each new user's UserConfigsDir on first provision.
+	NousConfigTemplate string
+	ReadinessTimeout   time.Duration
+	ReadinessInterval  time.Duration
+	Log                *slog.Logger
 }
+
+// nousConfigContainerPath is where nous reads its config inside the sandbox.
+// Matches the Containerfile's COPY destination; bind-mounting a per-user
+// file here shadows the baked default with the user's variant.
+const nousConfigContainerPath = "/usr/local/bin/config.json"
 
 // claudeCredsContainerPath is where the host's Claude Code credentials file
 // is mounted inside each sandbox. Matches the path nous's auth.LoadClaudeCodeToken
@@ -192,18 +208,28 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 }
 
 // extraMounts returns the per-user mounts beyond the workspace bind:
+//   - the user's nous data volume at /root/.nous (always — chat history /
+//     token cache survives container --rm)
+//   - the user's per-user nous config (read-only) at
+//     /usr/local/bin/config.json when UserConfigsDir is configured;
+//     seeded from NousConfigTemplate on first contact
 //   - the host's Claude Code credentials file (read-only) when configured
 //     and present at provision time
-//   - a podman named volume mounted at /root/.nous so chat history /
-//     session JSONL / token cache survive container --rm
 //
-// Probed each call so a creds file that appears mid-run (e.g. operator
-// runs `claude login`) becomes available to subsequent sandboxes without
-// an orchestrator restart. Missing creds file is informational — the
-// env-var fallback still works.
+// Probed each call so files that appear mid-run (operator edits user
+// config, runs `claude login`) become available to subsequent sandboxes
+// without orchestrator restart.
 func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 	out := []sandbox.Mount{
 		{Src: nousDataVolumeName(userID), Dst: nousDataContainerPath},
+	}
+	if cfgPath, err := pp.ensureUserConfig(userID); err != nil {
+		pp.Log.Warn("ensure user config failed; sandbox will fall back to baked default",
+			"user_id", userID, "err", err)
+	} else if cfgPath != "" {
+		out = append(out, sandbox.Mount{
+			Src: cfgPath, Dst: nousConfigContainerPath, ReadOnly: true,
+		})
 	}
 	if pp.ClaudeCredentialsPath != "" {
 		if _, err := os.Stat(pp.ClaudeCredentialsPath); err == nil {
@@ -218,6 +244,38 @@ func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 		}
 	}
 	return out
+}
+
+// ensureUserConfig returns the path to <UserConfigsDir>/<userID>/config.json,
+// seeding it from NousConfigTemplate if it doesn't exist yet. Returns
+// ("", nil) when the feature is disabled (UserConfigsDir empty). Returns an
+// error only on actual filesystem failures — caller logs and falls back.
+func (pp *PodmanProvisioner) ensureUserConfig(userID string) (string, error) {
+	if pp.UserConfigsDir == "" {
+		return "", nil
+	}
+	cfgPath := filepath.Join(pp.UserConfigsDir, userID, "config.json")
+	if _, err := os.Stat(cfgPath); err == nil {
+		return cfgPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat user config: %w", err)
+	}
+	if pp.NousConfigTemplate == "" {
+		return "", fmt.Errorf("user config missing and no template configured")
+	}
+	data, err := os.ReadFile(pp.NousConfigTemplate)
+	if err != nil {
+		return "", fmt.Errorf("read template %s: %w", pp.NousConfigTemplate, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		return "", fmt.Errorf("mkdir user config dir: %w", err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		return "", fmt.Errorf("seed user config: %w", err)
+	}
+	pp.Log.Info("seeded per-user nous config",
+		"user_id", userID, "path", cfgPath, "from", pp.NousConfigTemplate)
+	return cfgPath, nil
 }
 
 // failedTeardownLogLines bounds how many lines of container stdout/stderr to
