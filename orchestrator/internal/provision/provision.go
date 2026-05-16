@@ -29,13 +29,15 @@ const (
 // the URL once (e.g. PodmanProvisioner consulting a config base) don't have
 // to plumb the base through auth.
 type Result struct {
-	BranchName       string
-	WorktreePath     string
-	ContainerName    string
-	NousPort         int
-	PreviewPort      int
-	PreviewServePort int
-	PreviewURL       string // derived, not persisted; auth re-derives for /me
+	BranchName          string
+	WorktreePath        string
+	ContainerName       string
+	NousPort            int
+	PreviewPort         int
+	PreviewServePort    int
+	CodeServerPort      int    // host port → container :8443 (code-server)
+	CodeServerServePort int    // tailscale-serve HTTPS port for code-server
+	PreviewURL          string // derived, not persisted; auth re-derives for /me
 }
 
 // Provisioner is implemented by anything that can stand up a per-user sandbox
@@ -96,12 +98,16 @@ func (p *StubProvisioner) Provision(_ context.Context, userID string) (Result, e
 	nousPort := p.ports.NextHostPort()
 	previewPort := p.ports.NextHostPort()
 	previewServePort := p.ports.NextServePort()
+	codeServerPort := p.ports.NextHostPort()
+	codeServerServePort := p.ports.NextServePort()
 	return Result{
-		BranchName:       "user/" + userID,
-		WorktreePath:     filepath.Join(p.branchesDir, userID),
-		ContainerName:    "homa-user-" + userID,
-		NousPort:         nousPort,
-		PreviewPort:      previewPort,
-		PreviewServePort: previewServePort,
+		BranchName:          "user/" + userID,
+		WorktreePath:        filepath.Join(p.branchesDir, userID),
+		ContainerName:       "homa-user-" + userID,
+		NousPort:            nousPort,
+		PreviewPort:         previewPort,
+		PreviewServePort:    previewServePort,
+		CodeServerPort:      codeServerPort,
+		CodeServerServePort: codeServerServePort,
 	}, nil
 }

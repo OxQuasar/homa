@@ -52,6 +52,19 @@ export function me() {
   return call<MeResponse>('GET', '/me');
 }
 
+export interface CodeURLResponse {
+  enabled: boolean;
+  url?: string;
+}
+
+// codeURL fetches the per-user code-server URL (including a one-shot
+// `tkn` auth param). Returns {enabled: false} when the feature is off
+// or the user's code-server ports haven't been allocated yet — caller
+// hides the "Open VS Code" button in that case.
+export function codeURL() {
+  return call<CodeURLResponse>('GET', '/code-url');
+}
+
 export interface UploadResponse {
   // Path inside the user's worktree — what the LLM should reference
   // when it reads/uses the file. e.g. "static/uploads/foo.jpg".

@@ -16,8 +16,9 @@ const defaultPodmanBin = "podman"
 // changes are a single edit.
 const (
 	flagWorkspaceMount = "/workspace:Z"     // ":Z" relabels for SELinux; no-op elsewhere.
-	flagNousContainerPort     = "9000"
-	flagPreviewContainerPort  = "5173"
+	flagNousContainerPort       = "9000"
+	flagPreviewContainerPort    = "5173"
+	flagCodeServerContainerPort = "8443"
 )
 
 // PodmanManager implements Manager by shelling out to `podman` via Runner.
@@ -86,6 +87,11 @@ func buildRunArgs(spec Spec) []string {
 	}
 	args = append(args,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.PreviewPort, flagPreviewContainerPort),
+	)
+	if spec.CodeServerPort > 0 {
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.CodeServerPort, flagCodeServerContainerPort))
+	}
+	args = append(args,
 		"--memory="+spec.MemoryLimit,
 		"--cpus="+spec.CPULimit,
 	)

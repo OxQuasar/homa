@@ -180,6 +180,45 @@ done
 
 Site-template's git history covers itself; backing up `branches/` is mostly for uncommitted in-flight LLM work.
 
+## VS Code in the browser (code-server)
+
+Each user's sandbox runs a code-server instance, accessed via tailscale
+serve on a per-user HTTPS port. The "Open VS Code" button in the editor
+header opens it in a new tab.
+
+**Auth**: code-server runs with `--auth password`. Each user's password
+is **deterministically derived** from a master secret +
+their user_id (`sha256(secret || user_id)` → 22-char url-safe base64).
+No per-user password stored in the DB.
+
+**The URL** the editor opens includes `?tkn=<password>` so the user
+auto-logs-in on first visit; code-server's own session cookie persists
+the auth thereafter.
+
+**Master secret**: auto-generated on first orchestrator start at
+`~/homa/data/code_server_secret` (mode 0600, 32 bytes). Rotating it
+rewrites every user's password.
+
+```bash
+# Disable feature: in ~/homa/config.json:
+{
+  "code_server_enabled": false
+}
+
+# Rotate every user's password:
+rm ~/homa/data/code_server_secret
+systemctl --user restart homa
+# A new secret is generated; passwords change. Each user's code-server
+# remembers OLD session cookies, so they may need to log out + re-click
+# Open VS Code in the homa editor to pick up the new password.
+
+# Extensions / settings persistence: each user has a podman volume
+# `homa-user-<userid>-codeserver` mounted at /root/.local/share/code-server
+# inside their container. Survives container --rm.
+```
+
+Image size note: code-server adds ~250 MB. Sandbox image is now ~620 MB total.
+
 ## Browser errors → LLM
 
 A `<script>` baked into `site-template/src/app.html` captures

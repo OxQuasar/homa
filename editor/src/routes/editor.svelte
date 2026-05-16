@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { me, logout } from '../lib/api';
+  import { codeURL, me, logout } from '../lib/api';
   import { openSession, type Session } from '../lib/ws';
   import type {
     BufferedError,
@@ -31,6 +31,10 @@
   let wsStatus = $state<'connecting' | 'open' | 'closed'>('connecting');
   let workDir = $state('/workspace');
   let sessionId = $state('');
+
+  // "Open VS Code" link. Fetched once on mount; null while loading, ''
+  // when the feature is disabled (or user's ports not yet allocated).
+  let vsCodeURL = $state<string | null>(null);
 
   // Context-window usage shown in the header. Two independent sources:
   //   - promptTokens (live)  ← session_state.prompt_tokens = full
@@ -144,6 +148,15 @@
       onStatus: (s) => (wsStatus = s),
       onEvent: handleEvent
     });
+
+    // Resolve the per-user code-server URL once on mount. Stays null
+    // on failure so the button just stays hidden.
+    try {
+      const r = await codeURL();
+      vsCodeURL = r.enabled && r.url ? r.url : '';
+    } catch {
+      vsCodeURL = '';
+    }
 
     // Iframe error beacon → editor buffer. parseBeaconMessage handles
     // the origin allowlist (only messages from session.previewUrl's
@@ -313,6 +326,15 @@
         </span>
       {/if}
       <span class="status status-{wsStatus}">{wsStatus}</span>
+      {#if vsCodeURL}
+        <a
+          class="vscode-link"
+          href={vsCodeURL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open this sandbox in a full VS Code (browser)"
+        >Open VS Code</a>
+      {/if}
       <button onclick={onLogout}>Log out</button>
     </div>
   </header>
@@ -446,6 +468,20 @@
   }
 
   button { padding: 0.25rem 0.6rem; border: 1px solid #aaa; background: #fff; border-radius: 4px; cursor: pointer; }
+
+  /* "Open VS Code" link — looks like a button, opens a new tab.
+     Subtle blue accent so it stands out vs Log out without screaming. */
+  .vscode-link {
+    padding: 0.25rem 0.6rem;
+    border: 1px solid #1f6feb;
+    background: #f1f7ff;
+    color: #1f6feb;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .vscode-link:hover { background: #e6f0ff; }
 
   /* Three-column grid: chat (user-resized) | splitter (6px) | preview (rest). */
   main {

@@ -190,6 +190,22 @@ type Config struct {
 	// uploads return 413 cleanly without buffering the rejected body.
 	// 0 → upload.DefaultMaxBytes (10 MB).
 	UploadMaxBytes int64 `json:"upload_max_bytes"`
+
+	// CodeServerEnabled toggles the per-user code-server feature. Pointer
+	// bool so applyDefaults can distinguish "unset" from "explicit false";
+	// unset defaults to true when UsePodman is on (same pattern as
+	// MainSiteEnabled).
+	CodeServerEnabled *bool `json:"code_server_enabled"`
+
+	// CodeServerSecretPath is the file holding the master secret used to
+	// derive per-user code-server passwords. Auto-generated on first run
+	// at this path. Empty → "<DataDir>/code_server_secret".
+	CodeServerSecretPath string `json:"code_server_secret_path"`
+
+	// CodeServerHost is the public hostname the editor sends the user to
+	// for VS Code (scheme + port are derived). Empty → parse the host
+	// out of PreviewBaseURL so a single base URL drives both surfaces.
+	CodeServerHost string `json:"code_server_host"`
 }
 
 // Load reads the config from path. If path is empty or missing, returns a
@@ -287,6 +303,14 @@ func applyDefaults(cfg *Config) {
 		v := cfg.UsePodman
 		cfg.MainSiteEnabled = &v
 	}
+	// Code-server — same gating as MainSite (needs a real sandbox image).
+	if cfg.CodeServerEnabled == nil {
+		v := cfg.UsePodman
+		cfg.CodeServerEnabled = &v
+	}
+	if cfg.CodeServerSecretPath == "" {
+		cfg.CodeServerSecretPath = filepath.Join(cfg.DataDir, "code_server_secret")
+	}
 	if cfg.MainSiteHostPort == 0 {
 		cfg.MainSiteHostPort = defaultMainSiteHostPort
 	}
@@ -300,6 +324,9 @@ func (c *Config) DBPath() string {
 // MainSiteOn returns the effective MainSiteEnabled value. Pointer-bool
 // indirection mirrors CookieSecure: unset → default (true with podman).
 func (c *Config) MainSiteOn() bool { return c.MainSiteEnabled != nil && *c.MainSiteEnabled }
+
+// CodeServerOn returns the effective CodeServerEnabled value.
+func (c *Config) CodeServerOn() bool { return c.CodeServerEnabled != nil && *c.CodeServerEnabled }
 
 // SecureCookies returns the effective Secure attribute value.
 func (c *Config) SecureCookies() bool { return c.CookieSecure != nil && *c.CookieSecure }

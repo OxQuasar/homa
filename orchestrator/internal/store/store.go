@@ -27,20 +27,22 @@ var ErrNotFound = errors.New("not found")
 
 // User mirrors the users table.
 type User struct {
-	ID               string
-	Email            string
-	PasswordHash     string
-	Name             string
-	BranchName       string
-	WorktreePath     string
-	ContainerName    string
-	NousPort         int
-	PreviewPort      int
-	PreviewServePort int
-	NousSessionID    string // pinned nous session id (sent in Hello)
-	CreatedAt        int64  // unix seconds UTC
-	LastActiveAt     int64  // bumped by WS keepalive (proxy ticker)
-	LastMessageAt    int64  // bumped only on user `run` requests / login; drives idle-compact lifecycle
+	ID                  string
+	Email               string
+	PasswordHash        string
+	Name                string
+	BranchName          string
+	WorktreePath        string
+	ContainerName       string
+	NousPort            int
+	PreviewPort         int
+	PreviewServePort    int
+	NousSessionID       string // pinned nous session id (sent in Hello)
+	CodeServerPort      int    // host port → sandbox :8443 (code-server)
+	CodeServerServePort int    // tailscale-serve HTTPS port for code-server browser access
+	CreatedAt           int64  // unix seconds UTC
+	LastActiveAt        int64  // bumped by WS keepalive (proxy ticker)
+	LastMessageAt       int64  // bumped only on user `run` requests / login; drives idle-compact lifecycle
 }
 
 // WebSession represents a single browser session token.
@@ -109,6 +111,20 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("backfill users.last_message_at: %w", err)
 		}
 	}
+	if !cols["code_server_port"] {
+		// Two new columns for the code-server integration (Phase 1 of
+		// memories/homa/codeserver.md). Default 0 = "not allocated yet";
+		// startup-time backfill (cmd/homa/main.go) picks new ports for
+		// existing users without colliding with the user port pool.
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN code_server_port INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add users.code_server_port: %w", err)
+		}
+	}
+	if !cols["code_server_serve_port"] {
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN code_server_serve_port INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add users.code_server_serve_port: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -150,12 +166,14 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 			branch_name, worktree_path, container_name,
 			nous_port, preview_port, preview_serve_port,
 			nous_session_id,
+			code_server_port, code_server_serve_port,
 			created_at, last_active_at, last_message_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Email, u.PasswordHash, u.Name,
 		u.BranchName, u.WorktreePath, u.ContainerName,
 		u.NousPort, u.PreviewPort, u.PreviewServePort,
 		u.NousSessionID,
+		u.CodeServerPort, u.CodeServerServePort,
 		u.CreatedAt, u.LastActiveAt, u.LastMessageAt,
 	)
 	return err
@@ -180,6 +198,16 @@ func (s *Store) SetNousSessionID(ctx context.Context, userID, sessionID string) 
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET nous_session_id = ? WHERE id = ?`,
 		sessionID, userID)
+	return err
+}
+
+// SetCodeServerPorts updates the user's allocated code-server ports.
+// Used by the startup-time backfill for users that pre-date the
+// code-server feature (their columns are still 0).
+func (s *Store) SetCodeServerPorts(ctx context.Context, userID string, hostPort, servePort int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET code_server_port = ?, code_server_serve_port = ? WHERE id = ?`,
+		hostPort, servePort, userID)
 	return err
 }
 
@@ -228,22 +256,33 @@ func (s *Store) DeleteWebSession(ctx context.Context, token string) error {
 	return err
 }
 
-// AllUserPorts returns every host port (nous + preview) and every
-// tailscale-serve port currently allocated across all users. Used at
-// startup to seed PortAllocator so we don't re-issue ports after restart.
+// AllUserPorts returns every host port (nous + preview + code-server)
+// and every tailscale-serve port (preview + code-server) currently
+// allocated across all users. Used at startup to seed PortAllocator
+// so we don't re-issue ports after restart. Zero values are filtered
+// out (code-server columns may be 0 for pre-feature rows pending
+// backfill).
 func (s *Store) AllUserPorts(ctx context.Context) (hostPorts, servePorts []int, err error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT nous_port, preview_port, preview_serve_port FROM users`)
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		nous_port, preview_port, preview_serve_port,
+		code_server_port, code_server_serve_port FROM users`)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var nous, preview, serve int
-		if err := rows.Scan(&nous, &preview, &serve); err != nil {
+		var nous, preview, serve, csPort, csServe int
+		if err := rows.Scan(&nous, &preview, &serve, &csPort, &csServe); err != nil {
 			return nil, nil, err
 		}
 		hostPorts = append(hostPorts, nous, preview)
 		servePorts = append(servePorts, serve)
+		if csPort > 0 {
+			hostPorts = append(hostPorts, csPort)
+		}
+		if csServe > 0 {
+			servePorts = append(servePorts, csServe)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
@@ -255,13 +294,13 @@ func (s *Store) AllUserPorts(ctx context.Context) (hostPorts, servePorts []int, 
 // keeps the query cheap and avoids dragging password_hash etc. across
 // the tick.
 type UserSummary struct {
-	ID             string
-	ContainerName  string
-	NousPort       int   // needed when lifecycle dials nous for compaction
-	NousSessionID  string
-	WorktreePath   string
-	LastActiveAt   int64 // unix seconds UTC; bumped by WS keepalive
-	LastMessageAt  int64 // unix seconds UTC; bumped on actual user messages
+	ID            string
+	ContainerName string
+	NousPort      int    // needed when lifecycle dials nous for compaction
+	NousSessionID string
+	WorktreePath  string
+	LastActiveAt  int64 // unix seconds UTC; bumped by WS keepalive
+	LastMessageAt int64 // unix seconds UTC; bumped on actual user messages
 }
 
 // ListUsers returns the projection used by lifecycle.GC: container name +
@@ -317,6 +356,7 @@ const userSelect = `SELECT id, email, password_hash, name,
 	branch_name, worktree_path, container_name,
 	nous_port, preview_port, preview_serve_port,
 	nous_session_id,
+	code_server_port, code_server_serve_port,
 	created_at, last_active_at, last_message_at FROM users`
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
@@ -327,6 +367,7 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 		&u.BranchName, &u.WorktreePath, &u.ContainerName,
 		&u.NousPort, &u.PreviewPort, &u.PreviewServePort,
 		&u.NousSessionID,
+		&u.CodeServerPort, &u.CodeServerServePort,
 		&u.CreatedAt, &u.LastActiveAt, &u.LastMessageAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -15,15 +15,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/skipper/homa/orchestrator/internal/auth"
+	"github.com/skipper/homa/orchestrator/internal/codeserver"
+	"github.com/skipper/homa/orchestrator/internal/codeurl"
 	"github.com/skipper/homa/orchestrator/internal/config"
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
 	"github.com/skipper/homa/orchestrator/internal/mainsite"
@@ -123,7 +127,34 @@ func run(configPath string, log *slog.Logger) error {
 		"max_host_port_seen", maxInt(hostPorts),
 		"max_serve_port_seen", maxInt(servePorts))
 
-	prov := buildProvisioner(cfg, branchesDir, siteTemplateDir, ports, st, log)
+	// Code-server secret — only loaded if the feature is enabled. The
+	// presence of a non-empty []byte is what tells the provisioner to
+	// launch code-server in each user's sandbox.
+	var codeServerSecret []byte
+	if cfg.CodeServerOn() {
+		csPath, perr := filepath.Abs(cfg.CodeServerSecretPath)
+		if perr != nil {
+			return fmt.Errorf("abs code_server_secret_path: %w", perr)
+		}
+		s, serr := codeserver.LoadOrCreateSecret(csPath)
+		if serr != nil {
+			return fmt.Errorf("code-server secret: %w", serr)
+		}
+		codeServerSecret = s
+		log.Info("code-server", "enabled", true, "secret_path", csPath)
+		// One-shot startup backfill: any user whose code_server_port is 0
+		// (pre-feature row) gets ports allocated now. Existing running
+		// containers don't yet publish the port; they'll pick it up on
+		// next respawn (idle GC, image rebuild, or operator restart).
+		if err := backfillCodeServerPorts(context.Background(), st, ports, log); err != nil {
+			log.Warn("code-server: port backfill failed; existing users won't get IDE until fixed",
+				"err", err)
+		}
+	} else {
+		log.Info("code-server", "enabled", false)
+	}
+
+	prov := buildProvisioner(cfg, branchesDir, siteTemplateDir, ports, st, codeServerSecret, log)
 
 	authSvc := auth.New(st, prov, cfg.SecureCookies(), cfg.PreviewBaseURL, log)
 
@@ -137,6 +168,12 @@ func run(configPath string, log *slog.Logger) error {
 	hub := proxy.NewHub(log)
 	proxy.Register(mux, st, authSvc, hub, log)
 	upload.New(branchesDir, cfg.UploadMaxBytes, log).Register(mux, authSvc)
+
+	// Code-server URL endpoint: returns per-user {url, enabled} for the
+	// editor's "Open VS Code" button. When the feature is disabled
+	// returns {enabled: false} so the editor hides the button.
+	codeServerHost := resolveCodeServerHost(cfg, log)
+	codeurl.NewHandler(codeServerHost, codeServerSecret, log).Register(mux, authSvc)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)
@@ -240,7 +277,7 @@ func run(configPath string, log *slog.Logger) error {
 // ExecRunner-backed services for Podman, and logs the choice. The shared
 // PortAllocator is supplied by the caller so it's been seeded from the users
 // table before any signup hits it.
-func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, ports *provision.PortAllocator, st *store.Store, log *slog.Logger) provision.Provisioner {
+func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, ports *provision.PortAllocator, st *store.Store, codeServerSecret []byte, log *slog.Logger) provision.Provisioner {
 	if !cfg.UsePodman {
 		// Stub: just wire the same allocator so test parity holds. Port-start
 		// args are ignored when the allocator is passed in.
@@ -283,6 +320,7 @@ func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, p
 		ClaudeCredentialsPath: credsPath,
 		UserConfigsDir:        userConfigsDir,
 		NousConfigTemplate:    nousConfigTemplate,
+		CodeServerSecret:      codeServerSecret,
 		ReadinessTimeout:      time.Duration(cfg.ReadinessTimeoutSec) * time.Second,
 		ReadinessInterval:     time.Duration(cfg.ReadinessIntervalMS) * time.Millisecond,
 		Log:                   log,
@@ -434,6 +472,83 @@ func autoCommit(worktreePath, email, name string, log *slog.Logger) error {
 	commit.Stderr = os.Stderr
 	if err := commit.Run(); err != nil {
 		return fmt.Errorf("git commit in %s: %w", worktreePath, err)
+	}
+	return nil
+}
+
+// resolveCodeServerHost returns the hostname code-server URLs should
+// target. Priority: explicit cfg.CodeServerHost > host parsed from
+// cfg.PreviewBaseURL > "" (handler will then disable the feature).
+//
+// The URL the editor opens is `https://<host>:<port>/?…`; port comes
+// from each user's CodeServerServePort, not from PreviewBaseURL.
+func resolveCodeServerHost(cfg *config.Config, log *slog.Logger) string {
+	if cfg.CodeServerHost != "" {
+		return cfg.CodeServerHost
+	}
+	if cfg.PreviewBaseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(cfg.PreviewBaseURL)
+	if err != nil {
+		log.Warn("code-server host parse failed; URL endpoint will be disabled",
+			"preview_base_url", cfg.PreviewBaseURL, "err", err)
+		return ""
+	}
+	// url.Parse keeps host:port in Host; we want host-only since port
+	// comes from per-user CodeServerServePort. Strip the port if any.
+	h := u.Hostname()
+	if h == "" {
+		// PreviewBaseURL might be schema-less ("gandiva.tailnet.ts.net").
+		// Strip "://" prefix manually as a fallback.
+		h = strings.TrimPrefix(cfg.PreviewBaseURL, "https://")
+		h = strings.TrimPrefix(h, "http://")
+		if i := strings.IndexByte(h, ':'); i > 0 {
+			h = h[:i]
+		}
+		if i := strings.IndexByte(h, '/'); i > 0 {
+			h = h[:i]
+		}
+	}
+	return h
+}
+
+// backfillCodeServerPorts scans the users table for rows where the
+// code-server feature is on but the user predates it (code_server_port == 0).
+// Allocates ports via the (post-seed) PortAllocator and writes them back.
+// Existing containers don't pick up the new port until next respawn —
+// the operator may want to `podman stop` those users so they get IDE
+// access on next login. Logs an Info per row updated.
+//
+// Idempotent: re-running on an already-backfilled DB is a no-op.
+func backfillCodeServerPorts(ctx context.Context, st *store.Store, ports *provision.PortAllocator, log *slog.Logger) error {
+	users, err := st.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("ListUsers: %w", err)
+	}
+	updated := 0
+	for _, u := range users {
+		row, err := st.GetUserByID(ctx, u.ID)
+		if err != nil {
+			log.Warn("backfill: GetUserByID failed", "user_id", u.ID, "err", err)
+			continue
+		}
+		if row.CodeServerPort > 0 && row.CodeServerServePort > 0 {
+			continue
+		}
+		hostPort := ports.NextHostPort()
+		servePort := ports.NextServePort()
+		if err := st.SetCodeServerPorts(ctx, u.ID, hostPort, servePort); err != nil {
+			log.Warn("backfill: SetCodeServerPorts failed", "user_id", u.ID, "err", err)
+			continue
+		}
+		log.Info("backfill: allocated code-server ports",
+			"user_id", u.ID, "host_port", hostPort, "serve_port", servePort)
+		updated++
+	}
+	if updated > 0 {
+		log.Info("backfill: complete — existing users get IDE access on next container respawn",
+			"updated", updated)
 	}
 	return nil
 }

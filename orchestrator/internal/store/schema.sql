@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS users (
   nous_session_id     TEXT NOT NULL DEFAULT '',-- pinned nous session id (passed in Hello)
   created_at          INTEGER NOT NULL,        -- unix seconds UTC
   last_active_at      INTEGER NOT NULL,        -- bumped by WS keepalive (proxy ticker)
-  last_message_at     INTEGER NOT NULL DEFAULT 0 -- bumped on user `run` requests / login; drives idle-compact lifecycle
+  last_message_at     INTEGER NOT NULL DEFAULT 0, -- bumped on user `run` requests / login; drives idle-compact lifecycle
+  code_server_port    INTEGER NOT NULL DEFAULT 0, -- host port → sandbox :8443 (code-server)
+  code_server_serve_port INTEGER NOT NULL DEFAULT 0  -- tailscale-serve HTTPS port for browser code-server access
 );
 
 CREATE TABLE IF NOT EXISTS web_sessions (

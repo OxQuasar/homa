@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/skipper/homa/orchestrator/internal/codeserver"
 	"github.com/skipper/homa/orchestrator/internal/sandbox"
 	"github.com/skipper/homa/orchestrator/internal/store"
 	"github.com/skipper/homa/orchestrator/internal/tsserve"
@@ -50,6 +51,11 @@ type PodmanProvisioner struct {
 	MemoryLimit       string
 	CPULimit          string
 	AnthropicAPIKey   string // injected into the container as $ANTHROPIC_API_KEY
+	// CodeServerSecret is the master secret used to derive per-user
+	// code-server passwords (codeserver.PasswordFor). Empty disables
+	// the code-server feature; user containers won't get a PASSWORD env
+	// var and the entrypoint will skip launching code-server.
+	CodeServerSecret []byte
 	// ClaudeCredentialsPath is an absolute host path to a Claude Code
 	// `.credentials.json`. When non-empty AND the file exists at
 	// Provision/EnsureRunning time, the file is bind-mounted read-only into
@@ -95,16 +101,44 @@ func nousDataVolumeName(userID string) string {
 	return "homa-user-" + userID + "-nous"
 }
 
+// codeServerDataVolumeName returns the podman named volume that holds the
+// user's code-server settings + installed extensions, so they survive
+// container --rm just like chat history does.
+func codeServerDataVolumeName(userID string) string {
+	return "homa-user-" + userID + "-codeserver"
+}
+
+// codeServerDataContainerPath is where code-server's --user-data-dir
+// lives inside the sandbox. Matches the Containerfile path + the
+// --user-data-dir flag in entrypoint.sh.
+const codeServerDataContainerPath = "/root/.local/share/code-server"
+
+// buildContainerEnv returns the env map the user's sandbox should run
+// with. AnthropicAPIKey is always set (empty when unconfigured — nous
+// falls back to its OAuth chain). HOMA_CODE_SERVER_PASSWORD is set when
+// the orchestrator has both a secret AND the user has a code-server port
+// allocated — that combination is what tells the entrypoint to launch
+// code-server.
+func (pp *PodmanProvisioner) buildContainerEnv(userID string, codeServerAllocated bool) map[string]string {
+	env := map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey}
+	if codeServerAllocated && len(pp.CodeServerSecret) > 0 {
+		env["HOMA_CODE_SERVER_PASSWORD"] = codeserver.PasswordFor(pp.CodeServerSecret, userID)
+	}
+	return env
+}
+
 // completedSteps records which side-effect steps succeeded so tear-down on
 // failure can roll back in the reverse order.
 type completedSteps struct {
-	worktreeCreated bool
-	sandboxStarted  bool
-	tsserveRegistered bool
-	worktreePath    string
-	containerName   string
-	servePort       int
-	repoDir         string
+	worktreeCreated            bool
+	sandboxStarted             bool
+	tsserveRegistered          bool
+	tsserveCodeServerRegistered bool
+	worktreePath               string
+	containerName              string
+	servePort                  int
+	codeServerServePort        int
+	repoDir                    string
 }
 
 // Provision walks the §9 flow. On any error, runs reverse-order cleanup and
@@ -129,6 +163,8 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	nousPort := pp.Ports.NextHostPort()
 	previewPort := pp.Ports.NextHostPort()
 	servePort := pp.Ports.NextServePort()
+	codeServerPort := pp.Ports.NextHostPort()
+	codeServerServePort := pp.Ports.NextServePort()
 
 	branchName := "user/" + userID
 	worktreePath := filepath.Join(pp.BranchesDir, userID)
@@ -140,15 +176,18 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		"nous_port", nousPort,
 		"preview_port", previewPort,
 		"serve_port", servePort,
+		"code_server_port", codeServerPort,
+		"code_server_serve_port", codeServerServePort,
 	)
 	log.Info("provision: start")
 	startedAt := time.Now().UTC()
 
 	steps := &completedSteps{
-		worktreePath:  worktreePath,
-		containerName: containerName,
-		servePort:     servePort,
-		repoDir:       pp.SiteTemplateDir,
+		worktreePath:        worktreePath,
+		containerName:       containerName,
+		servePort:           servePort,
+		codeServerServePort: codeServerServePort,
+		repoDir:             pp.SiteTemplateDir,
 	}
 
 	// 1. git worktree add
@@ -160,16 +199,22 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 
 	// 2. podman run
 	log.Info("provision: stage", "stage", "sandbox_ensure", "image", pp.ImageRef)
+	codeServerOn := len(pp.CodeServerSecret) > 0
+	specCodeServerPort := 0
+	if codeServerOn {
+		specCodeServerPort = codeServerPort
+	}
 	spec := sandbox.Spec{
-		ContainerName: containerName,
-		ImageRef:      pp.ImageRef,
-		WorktreePath:  worktreePath,
-		NousPort:      nousPort,
-		PreviewPort:   previewPort,
-		MemoryLimit:   pp.MemoryLimit,
-		CPULimit:      pp.CPULimit,
-		Env:           map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey},
-		Mounts:        pp.extraMounts(userID),
+		ContainerName:  containerName,
+		ImageRef:       pp.ImageRef,
+		WorktreePath:   worktreePath,
+		NousPort:       nousPort,
+		PreviewPort:    previewPort,
+		CodeServerPort: specCodeServerPort,
+		MemoryLimit:    pp.MemoryLimit,
+		CPULimit:       pp.CPULimit,
+		Env:            pp.buildContainerEnv(userID, codeServerOn),
+		Mounts:         pp.extraMounts(userID),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
 		return Result{}, pp.fail(ctx, log, steps, fmt.Errorf("provision: sandbox ensure: %w", err))
@@ -191,6 +236,23 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	}
 	steps.tsserveRegistered = true
 
+	// 5. Code-server tsserve registration. Gated on the feature being
+	// enabled. Failure here doesn't abort signup — the user can still
+	// chat; only the IDE is unreachable until next provision/restart.
+	if codeServerOn {
+		log.Info("provision: stage", "stage", "tsserve_register_codeserver",
+			"serve_port", codeServerServePort)
+		csTarget := fmt.Sprintf("http://localhost:%d", codeServerPort)
+		if err := pp.TSServe.Register(ctx, codeServerServePort, csTarget); err != nil {
+			// Non-fatal: log + continue. Cleanup of just-this-step is
+			// handled by completedSteps tracking below.
+			log.Warn("provision: code-server tsserve register failed; IDE unreachable",
+				"err", err)
+		} else {
+			steps.tsserveCodeServerRegistered = true
+		}
+	}
+
 	log.Info("provision: done", "elapsed", time.Since(startedAt).Round(time.Millisecond))
 
 	result := Result{
@@ -200,6 +262,10 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		NousPort:         nousPort,
 		PreviewPort:      previewPort,
 		PreviewServePort: servePort,
+	}
+	if codeServerOn {
+		result.CodeServerPort = codeServerPort
+		result.CodeServerServePort = codeServerServePort
 	}
 	if pp.PreviewBaseURL != "" {
 		result.PreviewURL = pp.PreviewBaseURL + ":" + strconv.Itoa(servePort)
@@ -222,6 +288,10 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 	out := []sandbox.Mount{
 		{Src: nousDataVolumeName(userID), Dst: nousDataContainerPath},
+		// code-server settings + extensions need to survive container --rm.
+		// Volume always mounted even when the feature is "off" — keeps the
+		// container spec stable and the volume cheap when empty.
+		{Src: codeServerDataVolumeName(userID), Dst: codeServerDataContainerPath},
 	}
 	if cfgPath, err := pp.ensureUserConfig(userID); err != nil {
 		pp.Log.Warn("ensure user config failed; sandbox will fall back to baked default",
@@ -307,6 +377,12 @@ func (pp *PodmanProvisioner) fail(ctx context.Context, log *slog.Logger, steps *
 		}
 	}
 
+	if steps.tsserveCodeServerRegistered {
+		if err := pp.TSServe.Unregister(ctx, steps.codeServerServePort); err != nil {
+			log.Warn("teardown: tsserve code-server unregister failed",
+				"port", steps.codeServerServePort, "err", err)
+		}
+	}
 	if steps.tsserveRegistered {
 		if err := pp.TSServe.Unregister(ctx, steps.servePort); err != nil {
 			log.Warn("teardown: tsserve unregister failed", "port", steps.servePort, "err", err)
@@ -412,16 +488,22 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 	}
 
 	log.Info("ensure: stage", "stage", "sandbox_ensure")
+	codeServerOn := len(pp.CodeServerSecret) > 0 && u.CodeServerPort > 0
+	specCodeServerPort := 0
+	if codeServerOn {
+		specCodeServerPort = u.CodeServerPort
+	}
 	spec := sandbox.Spec{
-		ContainerName: u.ContainerName,
-		ImageRef:      pp.ImageRef,
-		WorktreePath:  u.WorktreePath,
-		NousPort:      u.NousPort,
-		PreviewPort:   u.PreviewPort,
-		MemoryLimit:   pp.MemoryLimit,
-		CPULimit:      pp.CPULimit,
-		Env:           map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey},
-		Mounts:        pp.extraMounts(u.ID),
+		ContainerName:  u.ContainerName,
+		ImageRef:       pp.ImageRef,
+		WorktreePath:   u.WorktreePath,
+		NousPort:       u.NousPort,
+		PreviewPort:    u.PreviewPort,
+		CodeServerPort: specCodeServerPort,
+		MemoryLimit:    pp.MemoryLimit,
+		CPULimit:       pp.CPULimit,
+		Env:            pp.buildContainerEnv(u.ID, codeServerOn),
+		Mounts:         pp.extraMounts(u.ID),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
 		log.Error("ensure: failed", "stage", "sandbox_ensure", "err", err)
@@ -461,6 +543,24 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 			return fmt.Errorf("EnsureRunning: tsserve register: %w", err)
 		}
 	}
+
+	// Code-server tsserve. Non-fatal if it fails — the homa editor still
+	// works, only the IDE URL is unreachable. Skip silently when the
+	// user has no code-server port (pre-feature row, backfill pending).
+	if codeServerOn {
+		csReg, err := pp.TSServe.IsRegistered(ctx, u.CodeServerServePort)
+		if err != nil {
+			log.Warn("ensure: code-server tsserve IsRegistered failed", "err", err)
+			csReg = false
+		}
+		if !csReg {
+			target := fmt.Sprintf("http://localhost:%d", u.CodeServerPort)
+			if err := pp.TSServe.Register(ctx, u.CodeServerServePort, target); err != nil {
+				log.Warn("ensure: code-server tsserve register failed", "err", err)
+			}
+		}
+	}
+
 	log.Info("ensure: done", "elapsed", time.Since(startedAt).Round(time.Millisecond))
 	return nil
 }

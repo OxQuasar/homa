@@ -25,6 +25,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Created here so the mount has a parent dir even on fresh containers.
 RUN mkdir -p /root/.claude
 
+# code-server v4.96.2 (pinned for reproducibility). Tarball install rather
+# than apt repo so the image build is offline-deterministic once cached.
+# Symlinked into /usr/local/bin so the entrypoint just calls `code-server`.
+# /root/.local/share/code-server is the user-data dir; the orchestrator
+# bind-mounts a per-user podman volume there so settings/extensions
+# survive container respawn.
+ARG CODE_SERVER_VERSION=4.96.2
+RUN curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-amd64.tar.gz" \
+    | tar -xz -C /opt \
+ && ln -s "/opt/code-server-${CODE_SERVER_VERSION}-linux-amd64/bin/code-server" /usr/local/bin/code-server \
+ && mkdir -p /root/.local/share/code-server
+
 COPY nous /usr/local/bin/nous
 # nous looks for config.json at nousDir (= dir of the binary) or cwd; placing
 # it next to the binary lets every sandbox launch find it without writing
@@ -35,5 +47,5 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/nous
 
 WORKDIR /workspace
-EXPOSE 9000 5173
+EXPOSE 9000 5173 8443
 ENTRYPOINT ["/entrypoint.sh"]

@@ -56,6 +56,22 @@ fi
 # nous next. --strictPort keeps us deterministic — fail loud if 5173 is busy.
 (cd /workspace && exec npm run dev -- --host 0.0.0.0 --port 5173 --strictPort) &
 
+# code-server in background — only when the orchestrator passed a per-user
+# password via HOMA_CODE_SERVER_PASSWORD. The PASSWORD env var is how
+# code-server's --auth password mode picks up its credential. Disable
+# telemetry + update-check so the container makes no surprise outbound
+# calls. Bind to 0.0.0.0:8443; orchestrator port-maps to 127.0.0.1.
+if [[ -n "${HOMA_CODE_SERVER_PASSWORD:-}" ]]; then
+  PASSWORD="$HOMA_CODE_SERVER_PASSWORD" code-server \
+    --bind-addr 0.0.0.0:8443 \
+    --auth password \
+    --disable-telemetry \
+    --disable-update-check \
+    --user-data-dir /root/.local/share/code-server \
+    /workspace \
+    >/tmp/code-server.log 2>&1 &
+fi
+
 # nous in foreground (PID 1 semantics). cwd = /workspace so it operates on
 # the user's site files; config comes from /usr/local/bin/config.json.
 cd /workspace

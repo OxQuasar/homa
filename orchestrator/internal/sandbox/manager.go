@@ -14,6 +14,7 @@ type Spec struct {
 	WorktreePath  string            // absolute host path bind-mounted at /workspace
 	NousPort      int               // host port → container :9000 (nous WS); 0 = skip
 	PreviewPort   int               // host port → container :5173 (vite dev)
+	CodeServerPort int              // host port → container :8443 (code-server); 0 = skip
 	MemoryLimit   string            // e.g. "2g"
 	CPULimit      string            // e.g. "2"
 	Env           map[string]string // injected into the container, e.g. ANTHROPIC_API_KEY

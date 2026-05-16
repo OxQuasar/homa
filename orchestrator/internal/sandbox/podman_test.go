@@ -67,6 +67,43 @@ func TestEnsureEmitsSpecArgv(t *testing.T) {
 	}
 }
 
+// TestEnsureEmitsCodeServerPort — when Spec.CodeServerPort > 0, the
+// run argv carries `-p 127.0.0.1:<port>:8443` (the in-container code-
+// server listen address) AFTER the preview port mapping. CodeServerPort
+// == 0 should NOT emit the flag (default test spec verifies that path).
+func TestEnsureEmitsCodeServerPort(t *testing.T) {
+	fr := &runnertest.FakeRunner{
+		Responds: func(name string, args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return nil, runnertest.ExitError(name, 125, "no such container")
+			}
+			return []byte("container-id\n"), nil
+		},
+	}
+	spec := sampleSpec()
+	spec.CodeServerPort = 30050
+	pm := sandbox.NewPodmanManager("podman", fr)
+	if err := pm.Ensure(context.Background(), spec); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	runCall := fr.Calls()[1]
+	wantArgs := []string{
+		"run", "-d", "--rm",
+		"--name", "homa-user-abcd1234",
+		"-v", "/var/homa/branches/abcd1234:/workspace:Z",
+		"-p", "127.0.0.1:40000:9000",
+		"-p", "127.0.0.1:40001:5173",
+		"-p", "127.0.0.1:30050:8443", // ← code-server
+		"--memory=2g",
+		"--cpus=2",
+		"-e", "ANTHROPIC_API_KEY=test-key",
+		"homa-sandbox:latest",
+	}
+	if !reflect.DeepEqual(runCall.Args, wantArgs) {
+		t.Errorf("code-server argv:\n got  %v\n want %v", runCall.Args, wantArgs)
+	}
+}
+
 // TestEnsureEmitsMainflavorArgv — main-sandbox shape: NoAutoRemove=true
 // (no --rm), NousPort=0 (no nous port mapping), HOMA_ROLE=main env. Catches
 // regressions in buildRunArgs's flag-by-flag conditional emission.
