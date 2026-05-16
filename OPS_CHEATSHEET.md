@@ -20,6 +20,10 @@ ps -o pid,etime,lstart,cmd -p $(pgrep -f "homa -config")
 stat -c "binary built: %y" ~/homa/homa
 ```
 
+> **Don't `pkill` if you're running under systemd.** A SIGTERM is a clean
+> exit, which `Restart=on-failure` does NOT respawn — you'll silently
+> stop the service. Use `systemctl --user restart homa` instead.
+
 ### Systemd (recommended for daily use)
 
 One-time install:
