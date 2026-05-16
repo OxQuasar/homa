@@ -16,6 +16,7 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -37,10 +38,11 @@ type Hub interface {
 }
 
 // Compactor is the slice the GC needs to run a full-compact on a user's
-// nous before stopping their container. Defaulted to CompactClient.Run;
-// tests substitute a stub.
+// nous before stopping their container. minTokens gates the actual
+// compact: sessions at or below it return ErrBelowThreshold without
+// triggering an LLM call. Tests substitute a stub.
 type Compactor interface {
-	Run(ctx context.Context, nousPort int, sessionID, workDir string, timeout time.Duration) error
+	Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) error
 }
 
 // GC drives the compact-then-stop idle lifecycle.
@@ -54,24 +56,26 @@ type Compactor interface {
 // Best-effort throughout: Stop errors are logged at warn; compaction
 // failures (busy session, timeout) don't block the Stop step.
 type GC struct {
-	sandbox        sandbox.Manager
-	users          UserSummaryLister
-	hub            Hub             // may be nil
-	compactor      Compactor       // may be nil → compaction step skipped
-	idleAfter      time.Duration
-	warningWindow  time.Duration
-	compactTimeout time.Duration
-	interval       time.Duration
-	now            func() time.Time
-	log            *slog.Logger
+	sandbox         sandbox.Manager
+	users           UserSummaryLister
+	hub             Hub             // may be nil
+	compactor       Compactor       // may be nil → compaction step skipped
+	idleAfter       time.Duration
+	warningWindow   time.Duration
+	compactTimeout  time.Duration
+	compactMinTokens int64
+	interval        time.Duration
+	now             func() time.Time
+	log             *slog.Logger
 }
 
 // Config groups all lifecycle tunables.
 type Config struct {
-	IdleAfter      time.Duration
-	WarningWindow  time.Duration // how long before IdleAfter to send the warning
-	CompactTimeout time.Duration // bound on the full_compact round-trip
-	Interval       time.Duration // ticker cadence
+	IdleAfter        time.Duration
+	WarningWindow    time.Duration // how long before IdleAfter to send the warning
+	CompactTimeout   time.Duration // bound on the full_compact round-trip
+	CompactMinTokens int64         // skip compaction when session PromptTokens <= this; 0 disables the gate
+	Interval         time.Duration // ticker cadence
 }
 
 // New builds a GC. log may be nil → default. hub / compactor may be nil.
@@ -80,16 +84,17 @@ func New(sb sandbox.Manager, ul UserSummaryLister, hub Hub, compactor Compactor,
 		log = slog.Default()
 	}
 	return &GC{
-		sandbox:        sb,
-		users:          ul,
-		hub:            hub,
-		compactor:      compactor,
-		idleAfter:      cfg.IdleAfter,
-		warningWindow:  cfg.WarningWindow,
-		compactTimeout: cfg.CompactTimeout,
-		interval:       cfg.Interval,
-		now:            func() time.Time { return time.Now().UTC() },
-		log:            log,
+		sandbox:          sb,
+		users:            ul,
+		hub:              hub,
+		compactor:        compactor,
+		idleAfter:        cfg.IdleAfter,
+		warningWindow:    cfg.WarningWindow,
+		compactTimeout:   cfg.CompactTimeout,
+		compactMinTokens: cfg.CompactMinTokens,
+		interval:         cfg.Interval,
+		now:              func() time.Time { return time.Now().UTC() },
+		log:              log,
 	}
 }
 
@@ -175,13 +180,23 @@ func (g *GC) compactAndStop(ctx context.Context, u store.UserSummary) {
 		if workDir == "" {
 			workDir = "/workspace"
 		}
-		g.log.Info("gc compacting", "user_id", u.ID, "session_id", u.NousSessionID, "nous_port", u.NousPort)
-		if err := g.compactor.Run(ctx, u.NousPort, u.NousSessionID, workDir, g.compactTimeout); err != nil {
-			// Non-fatal: stop the container anyway.
+		g.log.Info("gc compacting",
+			"user_id", u.ID, "session_id", u.NousSessionID, "nous_port", u.NousPort,
+			"min_tokens", g.compactMinTokens)
+		err := g.compactor.Run(ctx, u.NousPort, u.NousSessionID, workDir,
+			g.compactMinTokens, g.compactTimeout)
+		switch {
+		case err == nil:
+			g.log.Info("gc compaction complete", "user_id", u.ID)
+		case errors.Is(err, ErrBelowThreshold):
+			// Skip is the expected path for small sessions — log at
+			// Info, not Warn. Stop still proceeds.
+			g.log.Info("gc compaction skipped (session below threshold)",
+				"user_id", u.ID, "min_tokens", g.compactMinTokens)
+		default:
+			// Non-fatal: Stop runs regardless.
 			g.log.Warn("gc compaction failed; proceeding to stop",
 				"user_id", u.ID, "err", err)
-		} else {
-			g.log.Info("gc compaction complete", "user_id", u.ID)
 		}
 	}
 

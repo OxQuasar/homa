@@ -26,11 +26,27 @@ import (
 // sandbox nous. Stateless; one method, no construction.
 type CompactClient struct{}
 
-// Run dials ws://127.0.0.1:<nousPort>/, sends Hello + full_compact, waits
-// for compact_done (or timeout), and closes. Returns nil on success;
-// errors on dial/handshake/wait/timeout. Failures here are non-fatal at
-// the lifecycle layer — the caller logs + proceeds to Stop anyway.
-func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir string, timeout time.Duration) error {
+// ErrBelowThreshold is returned by Run when the session's PromptTokens are
+// at or below the gate threshold. The lifecycle treats this as a normal
+// skip path (logs at Info, proceeds to Stop) — distinct from real errors
+// like dial failures or session-busy.
+var ErrBelowThreshold = errors.New("session below compaction threshold")
+
+// Run dials ws://127.0.0.1:<nousPort>/, sends Hello, reads the initial
+// session_state snapshot, gates on PromptTokens > minTokens, and (if
+// past the gate) sends full_compact and waits for compact_done. Returns:
+//
+//   - nil                                : compaction completed
+//   - ErrBelowThreshold                  : skipped (session too small to matter)
+//   - any other error                    : dial/handshake/timeout/etc
+//
+// Failures here are non-fatal at the lifecycle layer — the caller logs
+// and proceeds to Stop anyway. Skip-below-threshold is also a non-fatal
+// path; the container still gets stopped, the session just doesn't pay
+// the LLM-call cost for a trivial compaction.
+//
+// `minTokens <= 0` disables the gate (always compact).
+func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) error {
 	url := fmt.Sprintf("ws://127.0.0.1:%d/", nousPort)
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -54,9 +70,17 @@ func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir
 		return fmt.Errorf("write hello: %w", err)
 	}
 
-	// 2. Drain events until we see session_state (snapshot landed).
-	if err := waitForEvent(roundCtx, conn, "session_state"); err != nil {
+	// 2. Read the initial session_state. PromptTokens here is
+	// sess.TokenUsage.TotalInputTokens() — same value the editor's
+	// header pill uses. Gate the compaction on this so small sessions
+	// don't pay for trivial summaries.
+	stateEv, err := waitForEvent(roundCtx, conn, "session_state")
+	if err != nil {
 		return fmt.Errorf("waiting for snapshot: %w", err)
+	}
+	if minTokens > 0 && stateEv.SessionState != nil &&
+		stateEv.SessionState.PromptTokens <= minTokens {
+		return ErrBelowThreshold
 	}
 
 	// 3. Request full_compact — the more thorough variant; takes optional
@@ -69,35 +93,45 @@ func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir
 	// 4. Wait for compact_done. nous's gateway emits this whether
 	// compaction succeeded or it failed because the session was busy /
 	// observing — in either case we move on to the Stop step.
-	return waitForEvent(roundCtx, conn, "compact_done")
+	_, err = waitForEvent(roundCtx, conn, "compact_done")
+	return err
+}
+
+// eventProbe is the slice of nous's Event JSON the compaction round-trip
+// needs to read: the type + any err_str on terminal events + the
+// session_state nested object for PromptTokens.
+type eventProbe struct {
+	Type         string             `json:"type"`
+	ErrStr       string             `json:"err_str,omitempty"`
+	SessionState *sessionStateProbe `json:"session_state,omitempty"`
+}
+
+type sessionStateProbe struct {
+	PromptTokens int64 `json:"prompt_tokens"`
 }
 
 // waitForEvent reads frames until one with the matching type lands.
-// Other events (session_state, text_delta, etc.) are silently consumed.
-// Returns ctx.Err() on timeout / cancellation.
-func waitForEvent(ctx context.Context, conn *websocket.Conn, wantType string) error {
+// Returns the parsed probe so callers can inspect typed fields (e.g.
+// session_state.prompt_tokens). Non-matching frames are silently
+// consumed. Returns ctx.Err() on timeout / cancellation.
+func waitForEvent(ctx context.Context, conn *websocket.Conn, wantType string) (*eventProbe, error) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return fmt.Errorf("timed out waiting for %q event", wantType)
+				return nil, fmt.Errorf("timed out waiting for %q event", wantType)
 			}
-			return err
+			return nil, err
 		}
-		var probe struct {
-			Type string `json:"type"`
-			// compact_done carries an optional err_str when something
-			// failed (e.g. "session busy"); surface it for diagnostics.
-			ErrStr string `json:"err_str,omitempty"`
-		}
-		if jerr := json.Unmarshal(data, &probe); jerr != nil {
+		var p eventProbe
+		if jerr := json.Unmarshal(data, &p); jerr != nil {
 			continue // not parseable as Event — skip
 		}
-		if probe.Type == wantType {
-			if probe.ErrStr != "" {
-				return fmt.Errorf("%s reported error: %s", wantType, probe.ErrStr)
+		if p.Type == wantType {
+			if p.ErrStr != "" {
+				return &p, fmt.Errorf("%s reported error: %s", wantType, p.ErrStr)
 			}
-			return nil
+			return &p, nil
 		}
 	}
 }

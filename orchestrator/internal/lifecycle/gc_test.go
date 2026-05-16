@@ -94,15 +94,17 @@ func (h *fakeHub) SendToUser(userID string, raw []byte) int {
 
 // fakeCompactor records compaction calls; configurable error.
 type fakeCompactor struct {
-	mu    sync.Mutex
-	calls []string // userIDs (we record sessionID since userIDs aren't passed here)
-	err   error
+	mu        sync.Mutex
+	calls     []string // sessionIDs the compactor was asked to run on
+	minTokens []int64  // minTokens passed each call
+	err       error
 }
 
-func (c *fakeCompactor) Run(_ context.Context, port int, sessionID, _ string, _ time.Duration) error {
+func (c *fakeCompactor) Run(_ context.Context, port int, sessionID, _ string, minTokens int64, _ time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, sessionID)
+	c.minTokens = append(c.minTokens, minTokens)
 	_ = port
 	return c.err
 }
@@ -120,14 +122,16 @@ func fixedNow(now int64) func() time.Time {
 	return func() time.Time { return time.Unix(now, 0).UTC() }
 }
 
-// sampleCfg — 60m idle, 60s warn window, 90s compact timeout. Pick interval
-// long enough that Tick() is the only thing driving state changes in tests.
+// sampleCfg — 60m idle, 60s warn window, 90s compact timeout, 50k token
+// gate. Pick interval long enough that Tick() is the only thing driving
+// state changes in tests.
 func sampleCfg() Config {
 	return Config{
-		IdleAfter:      60 * time.Minute,
-		WarningWindow:  60 * time.Second,
-		CompactTimeout: 90 * time.Second,
-		Interval:       time.Hour,
+		IdleAfter:        60 * time.Minute,
+		WarningWindow:    60 * time.Second,
+		CompactTimeout:   90 * time.Second,
+		CompactMinTokens: 50_000,
+		Interval:         time.Hour,
 	}
 }
 
@@ -232,6 +236,56 @@ func TestNoActionForFreshUser(t *testing.T) {
 		cm.callCount() != 0 || len(fm.stoppedSnapshot()) != 0 {
 		t.Errorf("fresh user provoked action: dc=%v sends=%v compact=%d stop=%v",
 			hub.disconnects, hub.sends, cm.callCount(), fm.stoppedSnapshot())
+	}
+}
+
+// TestCompactMinTokensPropagated — the CompactMinTokens config field
+// reaches the compactor unchanged. Sanity that config wiring isn't dropped.
+func TestCompactMinTokensPropagated(t *testing.T) {
+	const nowUnix = 1_700_000_000
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		NousPort: 40000, NousSessionID: "sess-a", WorktreePath: "/work/a",
+		LastMessageAt: nowUnix - 70*60,
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{}
+	gc, _ := buildGC(t, users, []string{"homa-user-a"}, hub, cm)
+	gc.SetNow(fixedNow(nowUnix))
+
+	if err := gc.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(cm.minTokens) != 1 {
+		t.Fatalf("compactor calls: got %d, want 1", len(cm.minTokens))
+	}
+	if cm.minTokens[0] != 50_000 {
+		t.Errorf("minTokens passed: got %d, want 50000 (sampleCfg default)", cm.minTokens[0])
+	}
+}
+
+// TestStopProceedsWhenCompactSkipsBelowThreshold — compactor returns
+// ErrBelowThreshold → lifecycle logs at info, Stop still fires. The
+// behavioral observable from the test side is the same as a successful
+// compact: Stop ran. But internally this is the "no LLM call wasted"
+// path.
+func TestStopProceedsWhenCompactSkipsBelowThreshold(t *testing.T) {
+	const nowUnix = 1_700_000_000
+	users := []store.UserSummary{{
+		ID: "a", ContainerName: "homa-user-a",
+		NousPort: 40000, NousSessionID: "sess-a", WorktreePath: "/work/a",
+		LastMessageAt: nowUnix - 70*60,
+	}}
+	hub := newFakeHub()
+	cm := &fakeCompactor{err: ErrBelowThreshold}
+	gc, fm := buildGC(t, users, []string{"homa-user-a"}, hub, cm)
+	gc.SetNow(fixedNow(nowUnix))
+
+	if err := gc.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if got := fm.stoppedSnapshot(); !equalStrings(got, []string{"homa-user-a"}) {
+		t.Errorf("stop did not proceed after below-threshold skip: %v", got)
 	}
 }
 

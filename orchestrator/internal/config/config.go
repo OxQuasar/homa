@@ -46,6 +46,7 @@ const (
 	defaultGCIntervalSeconds     = 60
 	defaultIdleWarningSeconds    = 60
 	defaultCompactTimeoutSeconds = 90
+	defaultCompactMinTokens      = 50000
 )
 
 // Config is the orchestrator's runtime configuration.
@@ -176,6 +177,14 @@ type Config struct {
 	// full_compact round-trip against the user's nous before giving up
 	// and proceeding to Stop. 0 → default 90.
 	CompactTimeoutSeconds int `json:"compact_timeout_seconds"`
+
+	// CompactMinTokens gates the idle-compaction: the orchestrator skips
+	// the LLM-driven compaction when the session's TotalInputTokens is at
+	// or below this. Avoids paying for trivial summaries on small
+	// sessions. The container is still stopped — only the compact step
+	// is skipped. 0 disables the gate (always compact); negative would
+	// also disable. Default 50000.
+	CompactMinTokens int64 `json:"compact_min_tokens"`
 }
 
 // Load reads the config from path. If path is empty or missing, returns a
@@ -255,6 +264,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.CompactTimeoutSeconds == 0 {
 		cfg.CompactTimeoutSeconds = defaultCompactTimeoutSeconds
+	}
+	if cfg.CompactMinTokens == 0 {
+		cfg.CompactMinTokens = defaultCompactMinTokens
 	}
 	// UserConfigsDir defaults to "configs" *under DataDir* (so it ends up
 	// at e.g. data/configs/). Resolved to absolute in main.go.

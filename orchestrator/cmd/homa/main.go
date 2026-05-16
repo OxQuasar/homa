@@ -191,10 +191,11 @@ func run(configPath string, log *slog.Logger) error {
 			hub,
 			lifecycle.CompactClient{},
 			lifecycle.Config{
-				IdleAfter:      time.Duration(cfg.IdleAfterMinutes) * time.Minute,
-				WarningWindow:  time.Duration(cfg.IdleWarningSeconds) * time.Second,
-				CompactTimeout: time.Duration(cfg.CompactTimeoutSeconds) * time.Second,
-				Interval:       time.Duration(cfg.GCIntervalSeconds) * time.Second,
+				IdleAfter:        time.Duration(cfg.IdleAfterMinutes) * time.Minute,
+				WarningWindow:    time.Duration(cfg.IdleWarningSeconds) * time.Second,
+				CompactTimeout:   time.Duration(cfg.CompactTimeoutSeconds) * time.Second,
+				CompactMinTokens: cfg.CompactMinTokens,
+				Interval:         time.Duration(cfg.GCIntervalSeconds) * time.Second,
 			},
 			log,
 		)

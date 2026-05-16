@@ -207,11 +207,18 @@ The editor shows a "Idle compaction in Ns" banner during the last
   "idle_after_minutes": 60,         // 0 → default 60; negative disables
   "gc_interval_seconds": 60,        // ticker cadence; 0 → default 60
   "idle_warning_seconds": 60,       // lead time for the warning banner
-  "compact_timeout_seconds": 90     // bound on the full_compact round-trip
+  "compact_timeout_seconds": 90,    // bound on the full_compact round-trip
+  "compact_min_tokens": 50000       // skip compaction below this PromptTokens; 0 disables gate
 }
 ```
 
 Restart orchestrator to apply.
+
+**`compact_min_tokens`** gates the idle compaction. When a user's
+`prompt_tokens` (= `sess.TokenUsage.TotalInputTokens()`) is at or below
+this, the orchestrator skips the LLM call and just stops the container.
+50k is roughly when nous's compaction becomes worthwhile (large enough
+context that summarization makes a meaningful dent in token usage).
 
 ### Restart orchestrator
 
