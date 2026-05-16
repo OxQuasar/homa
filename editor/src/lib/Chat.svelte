@@ -1,3 +1,17 @@
+<script lang="ts" module>
+  // Show the "thinking..." placeholder only between request-sent and the
+  // first stream event. Once any text/tool delta arrives, liveMessage is
+  // non-null and the rendered Message itself signals activity.
+  function shouldShowThinking(status: 'idle' | 'running', live: ChatMessage | null): boolean {
+    return status === 'running' && live === null;
+  }
+
+  // Follow-mode threshold (px). Anything within this of the bottom counts
+  // as "pinned" — gives a little slack so subpixel scroll jitter doesn't
+  // unpin during streaming.
+  const PIN_TOLERANCE_PX = 32;
+</script>
+
 <script lang="ts">
   import type { ChatMessage, Streaming } from './types';
   import Message from './Message.svelte';
@@ -17,19 +31,47 @@
       ? { role: 'assistant', text: streaming.text, tools: streaming.tools }
       : null
   );
-</script>
 
-<script lang="ts" module>
-  // Show the "thinking..." placeholder only between request-sent and the
-  // first stream event. Once any text/tool delta arrives, liveMessage is
-  // non-null and the rendered Message itself signals activity.
-  function shouldShowThinking(status: 'idle' | 'running', live: ChatMessage | null): boolean {
-    return status === 'running' && live === null;
+  // --- auto-scroll / follow mode ---------------------------------------
+  //
+  // Rule: scroll to bottom on any change IF either
+  //   (a) the user just sent a message (last message has role=user), or
+  //   (b) the user was already pinned to the bottom (within tolerance).
+  // If the user has scrolled up to read history, streaming/new messages
+  // do NOT yank them back — pinned stays false until they manually return.
+  //
+  // pinned is a plain (non-reactive) variable updated by onscroll, so the
+  // effect reads it without forming a write-loop with itself.
+
+  let scrollEl: HTMLDivElement | undefined = $state();
+  let pinned = true;
+
+  function onScroll() {
+    if (!scrollEl) return;
+    pinned = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < PIN_TOLERANCE_PX;
   }
+
+  $effect(() => {
+    // Read every reactive dep that should trigger a scroll check.
+    const len = messages.length;
+    const _ = streaming?.text;            // streaming text deltas
+    const __ = streaming?.tools.length;   // streaming tool calls
+    void _; void __;
+
+    if (!scrollEl) return;
+    const lastIsUser = len > 0 && messages[len - 1].role === 'user';
+    if (lastIsUser || pinned) {
+      // Wait one frame so the new content has been laid out before we
+      // snap scrollTop — otherwise scrollHeight reads the old value.
+      requestAnimationFrame(() => {
+        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+      });
+    }
+  });
 </script>
 
 <div class="chat">
-  <div class="messages">
+  <div class="messages" bind:this={scrollEl} onscroll={onScroll}>
     {#each messages as m, i (i)}
       <Message message={m} />
     {/each}
