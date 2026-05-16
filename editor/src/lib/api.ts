@@ -51,3 +51,38 @@ export function logout() {
 export function me() {
   return call<MeResponse>('GET', '/me');
 }
+
+export interface UploadResponse {
+  // Path inside the user's worktree — what the LLM should reference
+  // when it reads/uses the file. e.g. "static/uploads/foo.jpg".
+  path: string;
+  // Browser-facing URL the running site serves it from. e.g. "/uploads/foo.jpg".
+  public_path: string;
+  size: number;
+}
+
+// upload posts a single file as multipart to POST /upload. Returns the
+// landed path (which may differ from the local filename if it collided
+// with an existing upload). Errors include 413 (over size limit) and
+// 401 (cookie missing/stale) — surface them as ApiError with .status.
+export async function upload(file: File): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const resp = await fetch('/upload', {
+    method: 'POST',
+    credentials: 'include',
+    body: form
+  });
+  const text = await resp.text();
+  if (!resp.ok) {
+    let msg = resp.statusText;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed.error === 'string') msg = parsed.error;
+    } catch { /* not JSON */ }
+    const err = new Error(msg) as ApiError;
+    err.status = resp.status;
+    throw err;
+  }
+  return JSON.parse(text) as UploadResponse;
+}

@@ -169,6 +169,27 @@ done
 
 Site-template's git history covers itself; backing up `branches/` is mostly for uncommitted in-flight LLM work.
 
+## Get a user file (photo, etc.) into their site
+
+Three paths:
+
+1. **Editor upload button** (📎 in the input bar) — pick a file from
+   the local machine. Lands at `branches/<userid>/static/uploads/<name>`
+   (auto-renamed if it collides). Editor pre-pends `[uploaded: <path>]`
+   to the chat input so the next prompt names the file directly.
+   Default size cap: 10 MB. Tune with `upload_max_bytes` in
+   `config.json` (0 = default).
+
+2. **scp from another machine** — bypass the upload UI:
+   ```bash
+   scp ~/Pictures/foo.jpg gandiva:~/homa/branches/<userid>/static/images/
+   ```
+   Then in the editor: *"I added static/images/foo.jpg. Use it as …"*
+
+3. **Ask the LLM to fetch from a URL** — `curl` is available inside the
+   sandbox: *"Download https://example.com/foo.jpg to
+   static/images/foo.jpg and use it as …"*
+
 ## Idle lifecycle: tuning
 
 Default: at 60 min since user's last message, force-disconnect browser → compact (if PromptTokens > 50k) → stop container. Editor shows a banner at T-60s.

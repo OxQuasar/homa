@@ -33,6 +33,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/static"
 	"github.com/skipper/homa/orchestrator/internal/store"
 	"github.com/skipper/homa/orchestrator/internal/tsserve"
+	"github.com/skipper/homa/orchestrator/internal/upload"
 	"github.com/skipper/homa/orchestrator/internal/worktree"
 )
 
@@ -135,6 +136,7 @@ func run(configPath string, log *slog.Logger) error {
 	authSvc.Register(mux)
 	hub := proxy.NewHub(log)
 	proxy.Register(mux, st, authSvc, hub, log)
+	upload.New(branchesDir, cfg.UploadMaxBytes, log).Register(mux, authSvc)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)

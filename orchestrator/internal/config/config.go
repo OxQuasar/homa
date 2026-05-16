@@ -185,6 +185,11 @@ type Config struct {
 	// is skipped. 0 disables the gate (always compact); negative would
 	// also disable. Default 50000.
 	CompactMinTokens int64 `json:"compact_min_tokens"`
+
+	// UploadMaxBytes caps a single POST /upload request body. Larger
+	// uploads return 413 cleanly without buffering the rejected body.
+	// 0 → upload.DefaultMaxBytes (10 MB).
+	UploadMaxBytes int64 `json:"upload_max_bytes"`
 }
 
 // Load reads the config from path. If path is empty or missing, returns a
