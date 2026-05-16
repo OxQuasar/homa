@@ -5,6 +5,9 @@ export interface MeResponse {
   user_id: string;
   email: string;
   preview_url: string;
+  // Pinned nous session id; forwarded to the sandbox in the WS Hello so
+  // every connect attaches to the same session.
+  nous_session_id: string;
 }
 
 export interface ApiError extends Error {

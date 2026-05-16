@@ -282,13 +282,22 @@ func TestMeWithCookie(t *testing.T) {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
 	}
 	var got struct {
-		UserID     string `json:"user_id"`
-		Email      string `json:"email"`
-		PreviewURL string `json:"preview_url"`
+		UserID        string `json:"user_id"`
+		Email         string `json:"email"`
+		PreviewURL    string `json:"preview_url"`
+		NousSessionID string `json:"nous_session_id"`
 	}
 	decodeBody(t, resp, &got)
 	if got.UserID != signupBody.UserID {
 		t.Errorf("user_id: got %q, want %q", got.UserID, signupBody.UserID)
+	}
+	// nous_session_id must be populated at signup (8 hex chars matching the
+	// nous-side uuid[:8] convention) so the editor's WS Hello can pin a
+	// specific session id.
+	const wantNousSessionIDLen = 8
+	if len(got.NousSessionID) != wantNousSessionIDLen {
+		t.Errorf("nous_session_id: got %q (len %d), want %d hex chars",
+			got.NousSessionID, len(got.NousSessionID), wantNousSessionIDLen)
 	}
 	if got.Email != "me@b.co" {
 		t.Errorf("email: got %q", got.Email)

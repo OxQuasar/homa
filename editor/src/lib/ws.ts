@@ -16,11 +16,17 @@ export interface Session {
 
 export interface OpenOptions {
   workDir: string;
+  // Pinned session id (from /me.nous_session_id). When present, the
+  // sandbox-side nous attaches to (or creates) exactly this session,
+  // bypassing its default findUnlockedSession picking — which is what
+  // keeps one user = one session across reconnects. Empty falls back to
+  // legacy "any unlocked" behavior.
+  sessionId?: string;
   onEvent: (ev: NousEvent) => void;
   onStatus?: (status: WSStatus) => void;
 }
 
-export function openSession({ workDir, onEvent, onStatus }: OpenOptions): Session {
+export function openSession({ workDir, sessionId, onEvent, onStatus }: OpenOptions): Session {
   const url = wsURL();
   const ws = new WebSocket(url);
   let status: WSStatus = 'connecting';
@@ -29,7 +35,9 @@ export function openSession({ workDir, onEvent, onStatus }: OpenOptions): Sessio
   ws.addEventListener('open', () => {
     // First message MUST be the Hello so the daemon can spawn / attach a
     // session. Wire format is JSON per line (orchestrator proxy is opaque).
-    ws.send(JSON.stringify({ work_dir: workDir }));
+    const hello: { work_dir: string; session_id?: string } = { work_dir: workDir };
+    if (sessionId) hello.session_id = sessionId;
+    ws.send(JSON.stringify(hello));
     // Immediately request message history so the editor renders prior chat
     // on reconnect. nous auto-emits messages_loaded only when reconnecting
     // to a *live* (in-memory) session; for cold reconnects after logout it

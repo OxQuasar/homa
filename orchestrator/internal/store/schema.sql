@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
   nous_port           INTEGER NOT NULL,        -- host port → sandbox :9000
   preview_port        INTEGER NOT NULL,        -- host port → sandbox :5173
   preview_serve_port  INTEGER NOT NULL,        -- tailscale-serve HTTPS port
+  nous_session_id     TEXT NOT NULL DEFAULT '',-- pinned nous session id (passed in Hello)
   created_at          INTEGER NOT NULL,        -- unix seconds UTC
   last_active_at      INTEGER NOT NULL
 );

@@ -18,12 +18,14 @@
   let ws: Session | null = null;
   let wsStatus = $state<'connecting' | 'open' | 'closed'>('connecting');
   let workDir = $state('/workspace');
+  let sessionId = $state('');
 
   onMount(async () => {
     try {
       const m = await me();
       userEmail = m.email;
       session.previewUrl = m.preview_url || '';
+      sessionId = m.nous_session_id || '';
     } catch (err) {
       // Not authenticated — bounce to login.
       window.location.hash = '#/login';
@@ -31,6 +33,7 @@
     }
     ws = openSession({
       workDir,
+      sessionId,
       onStatus: (s) => (wsStatus = s),
       onEvent: handleEvent
     });

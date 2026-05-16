@@ -30,6 +30,11 @@ const (
 	cookieMaxAge   = 30 * 24 * time.Hour
 	sessionTokenBytes = 32 // 64 hex chars on the wire
 	userIDBytes    = 4     // 8 hex chars on the wire
+	// nousSessionIDBytes — 8 hex chars matches the format nous itself uses
+	// when it auto-generates session ids (uuid[:8]). Keeps logs / on-disk
+	// session dirs visually consistent across host-generated and
+	// nous-generated ids.
+	nousSessionIDBytes = 4
 	minPasswordLen = 8
 	bcryptCost     = bcrypt.DefaultCost
 )
@@ -85,9 +90,10 @@ type userIDResp struct {
 }
 
 type meResp struct {
-	UserID     string `json:"user_id"`
-	Email      string `json:"email"`
-	PreviewURL string `json:"preview_url"`
+	UserID        string `json:"user_id"`
+	Email         string `json:"email"`
+	PreviewURL    string `json:"preview_url"`
+	NousSessionID string `json:"nous_session_id"`
 }
 
 // --- handlers ---
@@ -136,6 +142,16 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	// Generate the pinned nous session id at signup. Stored in users row,
+	// sent in Hello on every WS connect — sandbox-side nous creates the
+	// session lazily on first contact. Decouples session identity from
+	// connection timing → no findUnlockedSession races.
+	nousSessionID, err := randomHex(nousSessionIDBytes)
+	if err != nil {
+		s.log.Error("nous session id generation failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
 	prov, err := s.prov.Provision(r.Context(), userID)
 	if err != nil {
@@ -149,7 +165,8 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("signup: provisioned",
 		"user_id", userID, "email", req.Email,
-		"container", prov.ContainerName, "preview_url", prov.PreviewURL)
+		"container", prov.ContainerName, "preview_url", prov.PreviewURL,
+		"nous_session_id", nousSessionID)
 
 	now := time.Now().UTC().Unix()
 	u := store.User{
@@ -163,6 +180,7 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		NousPort:         prov.NousPort,
 		PreviewPort:      prov.PreviewPort,
 		PreviewServePort: prov.PreviewServePort,
+		NousSessionID:    nousSessionID,
 		CreatedAt:        now,
 		LastActiveAt:     now,
 	}
@@ -254,9 +272,10 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, meResp{
-		UserID:     u.ID,
-		Email:      u.Email,
-		PreviewURL: s.previewURLFor(u),
+		UserID:        u.ID,
+		Email:         u.Email,
+		PreviewURL:    s.previewURLFor(u),
+		NousSessionID: u.NousSessionID,
 	})
 }
 
