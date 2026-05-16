@@ -68,6 +68,12 @@ fi
 # supported in code-server v4.x, so we don't use it. The env var
 # presence is the signal to launch code-server at all.
 if [[ -n "${HOMA_CODE_SERVER_PASSWORD:-}" ]]; then
+  # EXTENSIONS_GALLERY points code-server's marketplace UI at Open VSX
+  # (Eclipse Foundation's free marketplace). Microsoft's marketplace is
+  # license-restricted to their own VS Code builds. Open VSX has most
+  # popular extensions: Svelte, Prettier, ESLint, GitLens, Python,
+  # rust-analyzer, etc. Missing: Microsoft's own Copilot.
+  export EXTENSIONS_GALLERY='{"serviceUrl":"https://open-vsx.org/vscode/gallery","itemUrl":"https://open-vsx.org/vscode/item","resourceUrlTemplate":"https://open-vsx.org/vscode/asset/{publisher}/{name}/{version}/Microsoft.VisualStudio.Code.WebResources/{path}"}'
   code-server \
     --bind-addr 0.0.0.0:8443 \
     --auth none \
