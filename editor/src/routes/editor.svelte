@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { me, logout } from '../lib/api';
   import { openSession, type Session } from '../lib/ws';
-  import type { ChatMessage, Event as NousEvent, Streaming, ToolCall } from '../lib/types';
+  import type { ChatMessage, ContextStats, Event as NousEvent, Streaming, ToolCall } from '../lib/types';
   import { hydrateMessages } from '../lib/history';
   import Chat from '../lib/Chat.svelte';
 
@@ -19,6 +19,28 @@
   let wsStatus = $state<'connecting' | 'open' | 'closed'>('connecting');
   let workDir = $state('/workspace');
   let sessionId = $state('');
+
+  // Context-window usage shown in the header. Initial baseline lands when
+  // ws.ts sends context_stats on connect; session_state events update the
+  // `prompt` field live during a run; we re-request after run_done so
+  // the post-turn total is accurate.
+  let contextStats = $state<ContextStats | null>(null);
+
+  // Formatters for the header pill. "12.3k" rather than 12345 so it
+  // stays compact across orders of magnitude.
+  function formatTokens(n: number): string {
+    if (n < 1000) return String(n);
+    if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + 'k';
+    return (n / 1_000_000).toFixed(1) + 'M';
+  }
+  const contextDisplay = $derived.by(() => {
+    if (!contextStats) return null;
+    const used = contextStats.prompt ?? 0;
+    const max = contextStats.context_window ?? 0;
+    if (max <= 0) return formatTokens(used);
+    const pct = Math.round((used / max) * 100);
+    return { used: formatTokens(used), max: formatTokens(max), pct };
+  });
 
   // --- draggable chat / preview splitter -------------------------------
   //
@@ -97,6 +119,15 @@
     switch (ev.type) {
       case 'session_state':
         if (ev.session_state?.directory) workDir = ev.session_state.directory;
+        // session_state carries prompt_tokens — refresh just that field
+        // without losing context_window (which only context_stats supplies).
+        if (typeof ev.session_state?.prompt_tokens === 'number' && contextStats) {
+          contextStats = { ...contextStats, prompt: ev.session_state.prompt_tokens };
+        }
+        break;
+
+      case 'context_stats':
+        if (ev.stats) contextStats = ev.stats;
         break;
 
       case 'messages_loaded':
@@ -138,9 +169,12 @@
 
       case 'run_done':
         // End of a full multi-step run. Flush any in-flight streaming
-        // bubble into messages and return to idle.
+        // bubble into messages and return to idle. Refresh context stats —
+        // the run's tool outputs / new messages all add tokens that
+        // session_state events may not have surfaced cleanly.
         flushStreaming();
         session.status = 'idle';
+        ws?.send({ type: 'context_stats' });
         break;
     }
   }
@@ -182,6 +216,21 @@
     <div class="brand">homa</div>
     <div class="meta">
       <span class="email">{userEmail}</span>
+      {#if contextDisplay}
+        {#if typeof contextDisplay === 'string'}
+          <span class="ctx" title="Tokens in current prompt">{contextDisplay}</span>
+        {:else}
+          <span
+            class="ctx"
+            class:ctx-warm={contextDisplay.pct >= 60 && contextDisplay.pct < 85}
+            class:ctx-hot={contextDisplay.pct >= 85}
+            title="Context window usage"
+          >
+            {contextDisplay.used} / {contextDisplay.max}
+            <span class="ctx-pct">{contextDisplay.pct}%</span>
+          </span>
+        {/if}
+      {/if}
       {#if session.status === 'running'}
         <span class="working" title="LLM is working" aria-live="polite">
           <span class="working-dot"></span> working
@@ -231,6 +280,22 @@
   .status-connecting { background: #fee; color: #b80; }
   .status-open { background: #efe; color: #060; }
   .status-closed { background: #fdd; color: #c00; }
+
+  /* Context-usage pill — small, monospace-y. Three tiers by saturation:
+     normal (<60%), warm (60-84%), hot (>=85%). Tiers map to actionable
+     points: warm = "consider compacting soon", hot = "compact now or
+     the next turn might blow past the window". */
+  .ctx {
+    display: inline-flex; align-items: baseline; gap: 0.35rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 3px;
+    background: #f1f3f8; color: #345;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+  }
+  .ctx-pct { opacity: 0.7; font-size: 0.68rem; }
+  .ctx-warm { background: #fff4e0; color: #8a5a00; }
+  .ctx-hot  { background: #ffe0e0; color: #a00; }
 
   /* "working" pulse — peripheral indicator visible even when the chat is
      scrolled, so the user doesn't have to look at the message list to know

@@ -43,6 +43,10 @@ export function openSession({ workDir, sessionId, onEvent, onStatus }: OpenOptio
     // to a *live* (in-memory) session; for cold reconnects after logout it
     // doesn't, so we always ask.
     ws.send(JSON.stringify({ type: 'get_messages' }));
+    // And context stats so the header can show "X / window" right away.
+    // session_state events update `prompt` live after this; we re-request
+    // after every run_done to pick up window changes (model swap, etc.).
+    ws.send(JSON.stringify({ type: 'context_stats' }));
     setStatus('open');
   });
   ws.addEventListener('message', (e) => {
