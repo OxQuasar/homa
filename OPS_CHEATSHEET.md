@@ -47,6 +47,13 @@ journalctl   --user -u   homa -f          # live logs
 journalctl   --user -u   homa --since '10 min ago'
 ```
 
+From a non-interactive shell (cron, scripts, ssh `-c` invocations) the
+user systemd bus isn't auto-discovered — set XDG_RUNTIME_DIR explicitly:
+
+```bash
+XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart homa
+```
+
 Behavior:
 - `Restart=on-failure` — auto-respawns after crashes, not after clean stop
 - 20s graceful shutdown window (orchestrator's `shutdownGrace` is 10s)
