@@ -26,6 +26,9 @@ const (
 	// and the template is shipped with the sandbox source.
 	defaultUserConfigsRel       = "configs"
 	defaultNousConfigTemplate   = "sandbox/nous.config.json"
+	// Main-site sandbox is exposed on a host port well above the user port
+	// pool (40000+) so they can't collide.
+	defaultMainSiteHostPort     = 40500
 	// 30s was too tight for first-run signups: an empty worktree triggers
 	// `npm install` inside the container (≈30–60s depending on network +
 	// disk). Subsequent EnsureRunning calls reuse node_modules from the
@@ -132,6 +135,19 @@ type Config struct {
 	// Default: "sandbox/nous.config.json" (resolved relative to CWD).
 	NousConfigTemplate string `json:"nous_config_template"`
 
+	// MainSiteEnabled gates the orchestrator-owned public-site sandbox.
+	// When true, a singleton container ("homa-main") runs site-template/
+	// and the reverse proxy forwards / and unmatched paths to it.
+	// When false, falls back to the old behavior: GET / serves the SPA
+	// login page (set by the SPA-side router from the empty path).
+	// Default: true when UsePodman is true, false otherwise.
+	MainSiteEnabled *bool `json:"main_site_enabled"`
+
+	// MainSiteHostPort is the host port the main sandbox's vite is exposed on.
+	// Reverse proxy forwards / to 127.0.0.1:<this>. Separate from the user
+	// port pool (40000+) so they can't collide. Default: 40500.
+	MainSiteHostPort int `json:"main_site_host_port"`
+
 	// IdleAfterMinutes is the inactivity window before GC stops a user's
 	// sandbox (mvp.md §16). Unset / 0 in JSON → default 30 (applyDefaults
 	// can't distinguish "field missing" from "zero" in plain ints).
@@ -226,12 +242,25 @@ func applyDefaults(cfg *Config) {
 	if cfg.NousConfigTemplate == "" {
 		cfg.NousConfigTemplate = defaultNousConfigTemplate
 	}
+	// MainSite — default enabled when podman is on; off otherwise (the
+	// stub provisioner path has no image to run main from).
+	if cfg.MainSiteEnabled == nil {
+		v := cfg.UsePodman
+		cfg.MainSiteEnabled = &v
+	}
+	if cfg.MainSiteHostPort == 0 {
+		cfg.MainSiteHostPort = defaultMainSiteHostPort
+	}
 }
 
 // DBPath returns the absolute path to homa.db inside DataDir.
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "homa.db")
 }
+
+// MainSiteOn returns the effective MainSiteEnabled value. Pointer-bool
+// indirection mirrors CookieSecure: unset → default (true with podman).
+func (c *Config) MainSiteOn() bool { return c.MainSiteEnabled != nil && *c.MainSiteEnabled }
 
 // SecureCookies returns the effective Secure attribute value.
 func (c *Config) SecureCookies() bool { return c.CookieSecure != nil && *c.CookieSecure }

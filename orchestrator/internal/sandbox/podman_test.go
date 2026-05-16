@@ -67,6 +67,50 @@ func TestEnsureEmitsSpecArgv(t *testing.T) {
 	}
 }
 
+// TestEnsureEmitsMainflavorArgv — main-sandbox shape: NoAutoRemove=true
+// (no --rm), NousPort=0 (no nous port mapping), HOMA_ROLE=main env. Catches
+// regressions in buildRunArgs's flag-by-flag conditional emission.
+func TestEnsureEmitsMainflavorArgv(t *testing.T) {
+	fr := &runnertest.FakeRunner{
+		Responds: func(name string, args []string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "inspect" {
+				return nil, runnertest.ExitError(name, 125, "no such container")
+			}
+			return []byte("container-id\n"), nil
+		},
+	}
+	spec := sandbox.Spec{
+		ContainerName: "homa-main",
+		ImageRef:      "homa-sandbox:latest",
+		WorktreePath:  "/srv/homa/site-template",
+		NousPort:      0,
+		PreviewPort:   40500,
+		MemoryLimit:   "2g",
+		CPULimit:      "2",
+		Env:           map[string]string{"HOMA_ROLE": "main"},
+		NoAutoRemove:  true,
+	}
+	pm := sandbox.NewPodmanManager("podman", fr)
+	if err := pm.Ensure(context.Background(), spec); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	runCall := fr.Calls()[1]
+	wantArgs := []string{
+		"run", "-d", // no "--rm"
+		"--name", "homa-main",
+		"-v", "/srv/homa/site-template:/workspace:Z",
+		// no nous port mapping (NousPort=0)
+		"-p", "127.0.0.1:40500:5173",
+		"--memory=2g",
+		"--cpus=2",
+		"-e", "HOMA_ROLE=main",
+		"homa-sandbox:latest",
+	}
+	if !reflect.DeepEqual(runCall.Args, wantArgs) {
+		t.Errorf("main argv:\n got  %v\n want %v", runCall.Args, wantArgs)
+	}
+}
+
 // TestEnsureSkipsIfRunning — when IsRunning returns true, no `run` invocation.
 func TestEnsureSkipsIfRunning(t *testing.T) {
 	fr := &runnertest.FakeRunner{

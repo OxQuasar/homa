@@ -21,6 +21,10 @@ import (
 
 // newTestMux mounts auth + static on a fresh mux backed by a temp DB and
 // stub provisioner. The returned httptest.Server is closed via t.Cleanup.
+//
+// NOTE on /: static.Register no longer claims GET /. cmd/homa wires that
+// to either the mainsite reverse proxy or the SPA index fallback. These
+// tests cover the static-package-only mux — root requests 404 here.
 func newTestMux(t *testing.T) (*httptest.Server, *http.Client) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "homa.db")
@@ -36,7 +40,7 @@ func newTestMux(t *testing.T) (*httptest.Server, *http.Client) {
 
 	mux := http.NewServeMux()
 	authSvc.Register(mux)
-	if err := static.Register(mux, authSvc, log); err != nil {
+	if _, err := static.Register(mux, log); err != nil {
 		t.Fatalf("static.Register: %v", err)
 	}
 
@@ -54,46 +58,43 @@ func newTestMux(t *testing.T) (*httptest.Server, *http.Client) {
 	return srv, client
 }
 
-func TestRootRedirectsToLoginWithoutCookie(t *testing.T) {
+// TestRootIs404WithoutMainsite — when no GET / handler is registered
+// (this package's tests don't wire mainsite), the bare host returns 404.
+// In production cmd/homa always registers something at GET / (either the
+// mainsite proxy or the SPA fallback).
+func TestRootIs404WithoutMainsite(t *testing.T) {
 	srv, client := newTestMux(t)
 	resp, err := client.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatalf("get /: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("status: got %d, want 302", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Location"); got != "/login" {
-		t.Errorf("Location: got %q, want /login", got)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404 (static package alone does not own /)", resp.StatusCode)
 	}
 }
 
-func TestRootRedirectsToEditorWithCookie(t *testing.T) {
-	srv, client := newTestMux(t)
-
-	// Sign up so we get a homa_session cookie in the jar.
-	body, _ := json.Marshal(map[string]string{"email": "a@b.co", "password": "hunter22"})
-	resp, err := client.Post(srv.URL+"/signup", "application/json", bytes.NewReader(body))
+// TestRegisterReturnsFallbackHandler — Register returns the SPA index
+// handler so cmd/homa can pass it as the mainsite proxy's fallback. Sanity-
+// check it actually serves the SPA.
+func TestRegisterReturnsFallbackHandler(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	mux := http.NewServeMux()
+	fallback, err := static.Register(mux, log)
 	if err != nil {
-		t.Fatalf("signup: %v", err)
+		t.Fatalf("Register: %v", err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("signup status: %d", resp.StatusCode)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/anything", nil)
+	fallback.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fallback status: %d", rec.Code)
 	}
-
-	// Now GET / — should land at /editor.
-	resp, err = client.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("get /: %v", err)
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("fallback Content-Type: got %q, want text/html…", ct)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("status: got %d, want 302", resp.StatusCode)
-	}
-	if got := resp.Header.Get("Location"); got != "/editor" {
-		t.Errorf("Location: got %q, want /editor", got)
+	if !bytes.Contains(rec.Body.Bytes(), []byte("<html")) {
+		t.Errorf("fallback body missing <html>")
 	}
 }
 

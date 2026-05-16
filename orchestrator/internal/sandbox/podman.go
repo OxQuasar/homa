@@ -57,20 +57,30 @@ func (pm *PodmanManager) Ensure(ctx context.Context, spec Spec) error {
 // buildRunArgs constructs the `podman run …` argument list verbatim per
 // mvp.md §8. Pulled out as a separate function so tests can assert on the
 // slice directly.
+//
+// Flags vary by spec:
+//   - NousPort > 0   → emit `-p` for nous; 0 skips (main sandbox uses 0).
+//   - !NoAutoRemove  → emit `--rm`; the inverse leaves crashed containers
+//                      inspectable (main sandbox sets NoAutoRemove=true).
 func buildRunArgs(spec Spec) []string {
-	args := []string{
-		"run", "-d", "--rm",
-		"--name", spec.ContainerName,
-		"-v", spec.WorktreePath + ":" + flagWorkspaceMount,
+	args := []string{"run", "-d"}
+	if !spec.NoAutoRemove {
+		args = append(args, "--rm")
 	}
+	args = append(args,
+		"--name", spec.ContainerName,
+		"-v", spec.WorktreePath+":"+flagWorkspaceMount,
+	)
 	// Extra mounts in slice order — caller controls ordering. Emitted before
 	// ports/limits so the workspace mount stays adjacent to its kin in
 	// `podman inspect` output.
 	for _, m := range spec.Mounts {
 		args = append(args, "-v", formatMount(m))
 	}
+	if spec.NousPort > 0 {
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.NousPort, flagNousContainerPort))
+	}
 	args = append(args,
-		"-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.NousPort, flagNousContainerPort),
 		"-p", fmt.Sprintf("127.0.0.1:%d:%s", spec.PreviewPort, flagPreviewContainerPort),
 		"--memory="+spec.MemoryLimit,
 		"--cpus="+spec.CPULimit,

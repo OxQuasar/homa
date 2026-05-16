@@ -2,18 +2,26 @@ package sandbox
 
 import "context"
 
-// Spec is the complete description of a per-user sandbox container.
+// Spec is the complete description of a sandbox container.
 // All fields are required; defaults live in config, not here.
+//
+// Two flavors share this struct:
+//   - User sandbox: NousPort > 0 (vite + nous WS exposed).
+//   - Main sandbox: NousPort == 0 (vite only; no nous to expose).
 type Spec struct {
 	ContainerName string            // e.g. "homa-user-abcd1234"
 	ImageRef      string            // e.g. "homa-sandbox:latest"
 	WorktreePath  string            // absolute host path bind-mounted at /workspace
-	NousPort      int               // host port → container :9000 (nous WS)
+	NousPort      int               // host port → container :9000 (nous WS); 0 = skip
 	PreviewPort   int               // host port → container :5173 (vite dev)
 	MemoryLimit   string            // e.g. "2g"
 	CPULimit      string            // e.g. "2"
 	Env           map[string]string // injected into the container, e.g. ANTHROPIC_API_KEY
 	Mounts        []Mount           // extra bind mounts beyond the workspace; emitted in slice order
+	// NoAutoRemove disables podman's --rm flag. Default false (user sandboxes
+	// use --rm so GC cleanup is automatic). Main sandbox sets true so a
+	// crashed container leaves an inspectable corpse for debugging.
+	NoAutoRemove bool
 }
 
 // Mount is a single host→container bind mount appended to `podman run`.

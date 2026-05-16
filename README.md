@@ -16,7 +16,9 @@ Multi-user LLM-driven website builder. Each user signs up, gets a sandboxed envi
 ├── orchestrator/    Go service: auth, user store, sandbox mgr, reverse proxy
 ├── editor/          Vite + Svelte SPA (built static, served by orchestrator)
 ├── sandbox/         Containerfile + entrypoint + nous.config.json template
-├── site-template/   `main` git branch — SvelteKit scaffold users fork from
+├── site-template/   `main` git branch — the public site users fork from
+│                    AND merge their contributions back into. Served by
+│                    the `homa-main` sandbox container.
 ├── branches/        Worktrees per user (gitignored)
 ├── data/            Runtime state (gitignored)
 │   ├── homa.db         SQLite — users + web_sessions
@@ -27,13 +29,43 @@ Multi-user LLM-driven website builder. Each user signs up, gets a sandboxed envi
 └── homa             Built orchestrator binary (gitignored)
 ```
 
-Two podman objects per user, persistent across container restarts:
-- container `homa-user-<userid>` (ephemeral; recreated each spawn)
-- named volume `homa-user-<userid>-nous` (persistent; holds chat history)
+Podman objects:
+- `homa-main` container — the public-facing site (vite serving site-template/main)
+- `homa-user-<id>` container per signed-up user (vite + nous; ephemeral, GC'd when idle)
+- `homa-user-<id>-nous` named volume per user (persistent — holds chat history)
+
+## Request routing
+
+The orchestrator's HTTP mux serves three distinct surfaces from one origin:
+
+| Path | Served by |
+|---|---|
+| `POST /signup`, `/login`, `/logout`; `GET /me` | auth handlers |
+| `GET /ws` (cookie-gated) | WS reverse proxy to user's sandbox nous |
+| `GET /signup`, `/login`, `/editor`; `/assets/*` | editor SPA |
+| `GET /` and any other GET | reverse proxy → `homa-main` vite (the public site) |
+
+Catch-all `GET /` falls back to the SPA login page if the mainsite container is down (warming up, restarting after crash). Visitors always see something coherent.
 
 ## Admin workflows
 
 All admin tasks are filesystem / shell on the host. There's no admin HTTP UI — this is single-operator by design.
+
+### Merge a user's branch into `main`
+
+User branches accumulate edits independently. To promote a contributor's work into the public site:
+
+```bash
+./homa merge <userid>
+```
+
+Equivalent to `git -C site-template merge --no-ff user/<userid>` — fast-forward when possible, an explicit merge commit otherwise. The `homa-main` container's vite picks up the changed files via HMR; visitors see the new main within a couple of seconds.
+
+**Conflicts** surface as a non-zero `git` exit (full diff/CONFLICT markers on stderr). Resolve by hand in `~/homa/site-template/` and complete with `git commit -m ...`; nothing in homa is locked during the conflict window.
+
+**Reverting a merge** is just `git -C site-template revert <merge-sha>` followed by `git push` if you've wired the template to a remote.
+
+The merge is irreversible from `branches/<userid>` (their branch keeps its history; main now contains the merge). The user's next iteration starts from a still-diverged copy unless they `git merge main` into their branch.
 
 ### Edit a user's nous config
 
