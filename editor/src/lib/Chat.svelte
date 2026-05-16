@@ -51,6 +51,14 @@
     pinned = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < PIN_TOLERANCE_PX;
   }
 
+  function snapToBottom() {
+    if (!scrollEl) return;
+    // rAF so layout has settled before we read scrollHeight.
+    requestAnimationFrame(() => {
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
+  }
+
   $effect(() => {
     // Read every reactive dep that should trigger a scroll check.
     const len = messages.length;
@@ -60,13 +68,20 @@
 
     if (!scrollEl) return;
     const lastIsUser = len > 0 && messages[len - 1].role === 'user';
-    if (lastIsUser || pinned) {
-      // Wait one frame so the new content has been laid out before we
-      // snap scrollTop — otherwise scrollHeight reads the old value.
-      requestAnimationFrame(() => {
-        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-      });
-    }
+    if (lastIsUser || pinned) snapToBottom();
+  });
+
+  // Re-pin on container size changes (splitter drag, window resize, any
+  // layout reflow). Without this, a wider chat pane → fewer wrapped lines
+  // → shorter scrollHeight → unchanged scrollTop scrolls off the bottom,
+  // hiding the in-flight assistant bubble and the thinking-dots.
+  $effect(() => {
+    if (!scrollEl) return;
+    const ro = new ResizeObserver(() => {
+      if (pinned) snapToBottom();
+    });
+    ro.observe(scrollEl);
+    return () => ro.disconnect();
   });
 </script>
 
