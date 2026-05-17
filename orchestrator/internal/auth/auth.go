@@ -70,13 +70,32 @@ func New(s *store.Store, p provision.Provisioner, secureCookies bool, previewBas
 	}
 }
 
-// Register binds the four JSON endpoints onto mux. /me is the only one that
-// goes through the cookie middleware.
-func (s *Service) Register(mux *http.ServeMux) {
+// CORSWrapper is the optional middleware Register wraps GET /me with.
+// Matches the shape of cors.Policy.Middleware so the auth package
+// doesn't have to import internal/cors (which would invert the
+// dependency direction; cors is a leaf).
+type CORSWrapper func(http.Handler) http.Handler
+
+// Register binds the four JSON endpoints onto mux. /me is the only one
+// that goes through the cookie middleware AND the only one that opts
+// into CORS (user's iframe-rendered sites need to call it cross-origin
+// to check auth status). corsWrap may be nil → CORS off for /me.
+//
+// signup/login/logout stay first-party to the editor SPA — they're
+// served same-origin and don't need CORS.
+func (s *Service) Register(mux *http.ServeMux, corsWrap CORSWrapper) {
 	mux.HandleFunc("POST /signup", s.Signup)
 	mux.HandleFunc("POST /login", s.Login)
 	mux.HandleFunc("POST /logout", s.Logout)
-	mux.Handle("GET /me", s.RequireAuth(http.HandlerFunc(s.Me)))
+	meHandler := s.RequireAuth(http.HandlerFunc(s.Me))
+	if corsWrap != nil {
+		meHandler = corsWrap(meHandler)
+		// Register OPTIONS too — the CORS middleware short-circuits it
+		// with a 204 + preflight headers; without this mount the OPTIONS
+		// would 405 before reaching the wrapper.
+		mux.Handle("OPTIONS /me", meHandler)
+	}
+	mux.Handle("GET /me", meHandler)
 }
 
 // --- request / response shapes ---

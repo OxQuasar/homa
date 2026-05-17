@@ -80,7 +80,7 @@ func newTestRig(t *testing.T) *testRig {
 	authSvc := auth.New(st, prov, false /* cookieSecure */, "", log)
 
 	mux := http.NewServeMux()
-	authSvc.Register(mux)
+	authSvc.Register(mux, nil)
 	proxy.Register(mux, st, authSvc, proxy.NewHub(log), log)
 
 	orchSrv := httptest.NewServer(mux)

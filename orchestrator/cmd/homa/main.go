@@ -29,6 +29,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/codeserver"
 	"github.com/skipper/homa/orchestrator/internal/codeurl"
 	"github.com/skipper/homa/orchestrator/internal/config"
+	"github.com/skipper/homa/orchestrator/internal/cors"
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
 	"github.com/skipper/homa/orchestrator/internal/mainsite"
 	"github.com/skipper/homa/orchestrator/internal/provision"
@@ -185,7 +186,12 @@ func run(configPath string, log *slog.Logger) error {
 	// Method-aware mux means GET /signup and POST /signup coexist; the
 	// mainsite catch-all only fires for GETs that didn't match a more
 	// specific pattern.
-	authSvc.Register(mux)
+	// CORS policy for cross-origin API access from user-iframe sites.
+	// User sites render at <PreviewBaseURL>:<user-port>/; need to call
+	// orchestrator APIs at <PreviewBaseURL>:443/. Same host, different
+	// ports → cross-origin. Policy allows any port on the configured host.
+	corsPolicy := cors.New(cfg.PreviewBaseURL)
+	authSvc.Register(mux, corsPolicy.Middleware)
 	hub := proxy.NewHub(log)
 	proxy.Register(mux, st, authSvc, hub, log)
 	upload.New(branchesDir, cfg.UploadMaxBytes, log).Register(mux, authSvc)

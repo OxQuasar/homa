@@ -49,7 +49,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	svc := auth.New(st, prov, false, "", log)
 
 	mux := http.NewServeMux()
-	svc.Register(mux)
+	svc.Register(mux, nil)
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -494,7 +494,7 @@ func TestSignupDuplicateEmailDoesNotInvokeProvisioner(t *testing.T) {
 	svc := auth.New(st, spy, false, "", log)
 
 	mux := http.NewServeMux()
-	svc.Register(mux)
+	svc.Register(mux, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -568,7 +568,7 @@ func TestLoginEnsuresSandbox(t *testing.T) {
 	svc := auth.New(st, spy, false, "", log)
 
 	mux := http.NewServeMux()
-	svc.Register(mux)
+	svc.Register(mux, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -658,7 +658,7 @@ func TestLoginBumpsActiveBeforeEnsure(t *testing.T) {
 	svc := auth.New(st, obs, false, "", log)
 
 	mux := http.NewServeMux()
-	svc.Register(mux)
+	svc.Register(mux, nil)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 

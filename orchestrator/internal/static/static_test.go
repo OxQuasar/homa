@@ -39,7 +39,7 @@ func newTestMux(t *testing.T) (*httptest.Server, *http.Client) {
 	authSvc := auth.New(st, prov, false, "", log)
 
 	mux := http.NewServeMux()
-	authSvc.Register(mux)
+	authSvc.Register(mux, nil)
 	if _, err := static.Register(mux, log); err != nil {
 		t.Fatalf("static.Register: %v", err)
 	}
