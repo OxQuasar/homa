@@ -4,6 +4,7 @@
 // editor.svelte stays focused on wiring.
 
 import type {
+  ActiveTab,
   ChatMessage,
   DmConversation,
   DmMessage,
@@ -102,3 +103,55 @@ export function otherUnread(convos: DmConversation[], openTabs: DmTab[]): number
   }
   return n;
 }
+
+// --- Persistence (localStorage) ----------------------------------------
+//
+// Parse helpers kept pure so they're testable + don't reach into the
+// browser global. Editor.svelte calls them with localStorage.getItem
+// results.
+
+export const DM_TABS_STORAGE_KEY = 'homa.dmTabs';
+export const ACTIVE_TAB_STORAGE_KEY = 'homa.activeTab';
+
+// parseStoredTabs returns a clean DmTab[] from the raw localStorage
+// string. Drops malformed entries silently rather than throwing — a
+// stale/corrupted blob shouldn't break the editor's load.
+export function parseStoredTabs(raw: string | null): DmTab[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (t): t is DmTab =>
+          t !== null &&
+          typeof t === 'object' &&
+          typeof (t as DmTab).peerId === 'string' &&
+          typeof (t as DmTab).username === 'string'
+      )
+      .map((t) => ({ peerId: t.peerId, username: t.username })); // strip extra fields
+  } catch {
+    return [];
+  }
+}
+
+// parseStoredActiveTab returns the restored active tab, falling back
+// to {kind:'ai'} on malformed / unknown / DM-without-peerId input.
+// Caller is responsible for verifying the restored DM peerId is still
+// in the restored tabs list (an active tab whose peer was closed in a
+// previous session shouldn't resurrect).
+export function parseStoredActiveTab(raw: string | null): ActiveTab {
+  if (!raw) return { kind: 'ai' };
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.kind === 'ai') return { kind: 'ai' };
+    if (parsed?.kind === 'dm' && typeof parsed.peerId === 'string' && parsed.peerId !== '') {
+      return { kind: 'dm', peerId: parsed.peerId };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { kind: 'ai' };
+}
+
+

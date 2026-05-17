@@ -20,6 +20,8 @@
     parseBeaconMessage
   } from '../lib/iframe_errors';
   import {
+    ACTIVE_TAB_STORAGE_KEY,
+    DM_TABS_STORAGE_KEY,
     closeTab,
     dmsToChatMessages,
     fetchConversations,
@@ -27,6 +29,8 @@
     fetchUnreadCount,
     openTab,
     otherUnread,
+    parseStoredActiveTab,
+    parseStoredTabs,
     sendDm
   } from '../lib/dm';
   import Chat from '../lib/Chat.svelte';
@@ -92,6 +96,9 @@
   // DM tabs are ephemeral (lost on reload — by design); reopen via the
   // picker which lists contacted users + lets you search all users.
 
+  // Restored from localStorage on mount. Initial values are AI / [] so
+  // the initial render matches what SSR would produce; the actual
+  // restore happens in onMount (where localStorage is available).
   let activeTab = $state<ActiveTab>({ kind: 'ai' });
   let dmTabs = $state<DmTab[]>([]);
   let dmThreads = $state<Record<string, ChatMessage[]>>({});
@@ -257,11 +264,37 @@
     // origin land in the buffer) + payload shape validation.
     window.addEventListener('message', onIframeMessage);
 
+    // Restore DM tabs + active tab from localStorage. If the saved
+    // active tab was a DM but its peerId is no longer in the restored
+    // tabs list (corrupted state), fall back to AI. selectTab() installs
+    // the per-thread polling timer when restoring a DM tab.
+    if (typeof window !== 'undefined') {
+      dmTabs = parseStoredTabs(window.localStorage.getItem(DM_TABS_STORAGE_KEY));
+      const restored = parseStoredActiveTab(window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY));
+      const valid = restored.kind === 'ai' ||
+        dmTabs.some((t) => t.peerId === restored.peerId);
+      selectTab(valid ? restored : { kind: 'ai' });
+    }
+
     // DM polling: refresh conversations + unread on a slow cadence (15s)
     // for cross-tab/cross-peer signaling. Fire once immediately so the
     // picker badge populates without waiting a full interval.
     void refreshConversations();
     unreadTimer = setInterval(refreshConversations, UNREAD_INTERVAL_MS);
+  });
+
+  // Persist tabs + active tab on every change. $effect runs after the
+  // initial mount restore (which happens INSIDE onMount), so the
+  // restore-then-immediately-save pattern is safe: the saved blob
+  // is just rewritten with the same content.
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(DM_TABS_STORAGE_KEY, JSON.stringify(dmTabs));
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, JSON.stringify(activeTab));
+    } catch {
+      /* private-mode / quota — silently no-op, ephemeral fallback */
+    }
   });
 
   onDestroy(() => {

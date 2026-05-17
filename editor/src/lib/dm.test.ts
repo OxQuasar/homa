@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { closeTab, dmToChatMessage, dmsToChatMessages, openTab, otherUnread } from './dm';
+import {
+  closeTab,
+  dmToChatMessage,
+  dmsToChatMessages,
+  openTab,
+  otherUnread,
+  parseStoredActiveTab,
+  parseStoredTabs
+} from './dm';
 import type { DmConversation, DmMessage, DmTab } from './types';
 
 describe('dmToChatMessage', () => {
@@ -101,5 +109,74 @@ describe('otherUnread', () => {
   it('returns 0 when all peers open', () => {
     const opens = convos.map((c) => ({ peerId: c.peer_id, username: c.peer_username }));
     expect(otherUnread(convos, opens)).toBe(0);
+  });
+});
+
+describe('parseStoredTabs', () => {
+  it('returns empty for null / empty / non-array / invalid JSON', () => {
+    expect(parseStoredTabs(null)).toEqual([]);
+    expect(parseStoredTabs('')).toEqual([]);
+    expect(parseStoredTabs('not-json')).toEqual([]);
+    expect(parseStoredTabs('{"not":"array"}')).toEqual([]);
+    expect(parseStoredTabs('null')).toEqual([]);
+  });
+
+  it('parses valid tab array', () => {
+    const raw = JSON.stringify([
+      { peerId: 'alice001', username: 'alice' },
+      { peerId: 'bob00001', username: 'bob' }
+    ]);
+    const out = parseStoredTabs(raw);
+    expect(out).toHaveLength(2);
+    expect(out[0].peerId).toBe('alice001');
+    expect(out[1].username).toBe('bob');
+  });
+
+  it('drops malformed entries (missing fields, wrong types)', () => {
+    const raw = JSON.stringify([
+      { peerId: 'good01', username: 'good' },
+      { peerId: 'nouser' },                  // missing username
+      { username: 'nopeer' },                // missing peerId
+      { peerId: 42, username: 'numeric' },   // wrong type
+      null,
+      'string-not-object'
+    ]);
+    const out = parseStoredTabs(raw);
+    expect(out).toHaveLength(1);
+    expect(out[0].peerId).toBe('good01');
+  });
+
+  it('strips extra fields from valid entries', () => {
+    const raw = JSON.stringify([{ peerId: 'x', username: 'y', injected: 'evil' }]);
+    const out = parseStoredTabs(raw);
+    expect(out[0]).toEqual({ peerId: 'x', username: 'y' });
+  });
+});
+
+describe('parseStoredActiveTab', () => {
+  it('null / empty / invalid → AI', () => {
+    expect(parseStoredActiveTab(null)).toEqual({ kind: 'ai' });
+    expect(parseStoredActiveTab('')).toEqual({ kind: 'ai' });
+    expect(parseStoredActiveTab('not-json')).toEqual({ kind: 'ai' });
+  });
+
+  it('explicit AI', () => {
+    expect(parseStoredActiveTab('{"kind":"ai"}')).toEqual({ kind: 'ai' });
+  });
+
+  it('valid DM', () => {
+    expect(parseStoredActiveTab('{"kind":"dm","peerId":"alice001"}')).toEqual({
+      kind: 'dm',
+      peerId: 'alice001'
+    });
+  });
+
+  it('malformed DM (missing peerId, empty peerId) → AI fallback', () => {
+    expect(parseStoredActiveTab('{"kind":"dm"}')).toEqual({ kind: 'ai' });
+    expect(parseStoredActiveTab('{"kind":"dm","peerId":""}')).toEqual({ kind: 'ai' });
+  });
+
+  it('unknown kind → AI fallback', () => {
+    expect(parseStoredActiveTab('{"kind":"group"}')).toEqual({ kind: 'ai' });
   });
 });
