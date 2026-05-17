@@ -31,6 +31,13 @@
   let wsStatus = $state<'connecting' | 'open' | 'closed'>('connecting');
   let workDir = $state('/workspace');
   let sessionId = $state('');
+  // wsWasOpen flips true the first time we see status='open'. Drives the
+  // auto-logout-on-close behavior: if we never got open we want to leave
+  // the user on /editor showing the closed status (so an initial-connect
+  // failure doesn't bounce-loop main → login → /editor → bounce). After
+  // a successful open, any subsequent close is treated as session lost
+  // and we send the user back to the public site.
+  let wsWasOpen = false;
 
   // "Open VS Code" link. Fetched once on mount; null while loading, ''
   // when the feature is disabled (or user's ports not yet allocated).
@@ -145,7 +152,16 @@
     ws = openSession({
       workDir,
       sessionId,
-      onStatus: (s) => (wsStatus = s),
+      onStatus: (s) => {
+        wsStatus = s;
+        if (s === 'open') wsWasOpen = true;
+        // Lost-session path. We were live, the WS dropped (forced idle
+        // compaction, container stopped, orchestrator restart, network
+        // blip). Same flow as the Log out button: clear the cookie, send
+        // back to main. Re-login via the public site's pill restarts
+        // cleanly with a fresh WS.
+        else if (s === 'closed' && wsWasOpen) onLogout();
+      },
       onEvent: handleEvent
     });
 
