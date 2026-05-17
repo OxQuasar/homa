@@ -228,6 +228,20 @@ systemctl --user restart homa
 
 Image size note: code-server adds ~250 MB. Sandbox image is now ~620 MB total.
 
+## People directory
+
+```
+GET /api/users  → [{user_id, username, created_at}, …]
+```
+
+Auth-required + CORS-wrapped (same posture as the forum). Sorted by
+created_at ascending. Users with empty username (pre-backfill legacy
+rows) are filtered out. **No emails in the response** — directory is
+a public-name-only view.
+
+Example page lives at `site-template/src/routes/users/+page.svelte`;
+the forum index links to it via the "All users →" button.
+
 ## Forum API
 
 Shared multi-tenant forum lives at orchestrator endpoints. All four

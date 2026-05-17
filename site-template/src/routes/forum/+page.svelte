@@ -71,7 +71,10 @@
 <svelte:head><title>Forum</title></svelte:head>
 
 <main>
-  <h1>Forum</h1>
+  <header class="page-header">
+    <h1>Forum</h1>
+    <a class="nav" href="/users">All users →</a>
+  </header>
 
   {#if !loaded}
     <p>Loading…</p>
@@ -112,7 +115,10 @@
 
 <style>
   main { max-width: 720px; margin: 2rem auto; padding: 0 1rem; font-family: system-ui; }
-  h1 { font-weight: 400; }
+  .page-header { display: flex; align-items: baseline; justify-content: space-between; }
+  h1 { font-weight: 400; margin: 0; }
+  .nav { color: #1f6feb; text-decoration: none; font-size: 0.9rem; }
+  .nav:hover { text-decoration: underline; }
   form { display: flex; gap: 0.5rem; margin: 1.5rem 0; }
   input { flex: 1; padding: 0.5rem; font-size: 1rem; }
   button { padding: 0.5rem 1rem; }
