@@ -15,8 +15,8 @@
 <a class="login-link" href="/login">Login</a>
 
 <Hero
-  image="/images/white-tower-night.jpg"
-  alt="A white stone tower with a wooden door, evoking the White Tower of Tar Valon"
+  image="/uploads/whitetower.jpg"
+  alt="The White Tower"
   title="The White Tower"
   titleY="22%"
   ctaHref="/enter"

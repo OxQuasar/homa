@@ -96,8 +96,26 @@
   const CHAT_WIDTH_DEFAULT_PX = 420;
   const CHAT_MIN_PX = 280;
   const PREVIEW_MIN_PX = 320;
+  const CHAT_COLLAPSED_KEY = 'homa.chatCollapsed';
 
   let chatWidth = $state(loadChatWidth());
+  // chatCollapsed hides the chat pane entirely + replaces the splitter
+  // drag-handle with a `>` tab. Persisted so the user's preference
+  // sticks across reloads. The grid column width literally goes to 0
+  // when collapsed; no display:none, no DOM tear-down (Chat keeps its
+  // streaming state etc.).
+  let chatCollapsed = $state(loadChatCollapsed());
+
+  function loadChatCollapsed(): boolean {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(CHAT_COLLAPSED_KEY) === '1';
+  }
+  function toggleChatCollapsed() {
+    chatCollapsed = !chatCollapsed;
+    try {
+      window.localStorage.setItem(CHAT_COLLAPSED_KEY, chatCollapsed ? '1' : '0');
+    } catch { /* private mode */ }
+  }
 
   function loadChatWidth(): number {
     if (typeof window === 'undefined') return CHAT_WIDTH_DEFAULT_PX;
@@ -113,6 +131,9 @@
   }
 
   function startSplitterDrag(e: PointerEvent) {
+    // Drag is meaningless when chat is collapsed (no width to change).
+    // Cleaner than gating in the move handler — never starts the listener.
+    if (chatCollapsed) return;
     e.preventDefault();
     document.body.classList.add('splitting');
     // Capture pointer events so the drag survives even when the cursor
@@ -359,7 +380,10 @@
       <button onclick={onLogout}>Log out</button>
     </div>
   </header>
-  <main style:--chat-width="{chatWidth}px">
+  <main
+    style:--chat-width="{chatCollapsed ? 0 : chatWidth}px"
+    class:chat-collapsed={chatCollapsed}
+  >
     <section class="chat-pane">
       {#if errorBuffer.length > 0}
         <!--
@@ -413,7 +437,19 @@
       aria-orientation="vertical"
       aria-label="Resize chat panel"
       onpointerdown={startSplitterDrag}
-    ></div>
+    >
+      <!--
+        Collapse-toggle tab. Sits in the center of the splitter strip.
+        Click stops propagation so it doesn't initiate a drag.
+      -->
+      <button
+        class="collapse-toggle"
+        onclick={(e) => { e.stopPropagation(); toggleChatCollapsed(); }}
+        onpointerdown={(e) => e.stopPropagation()}
+        title={chatCollapsed ? 'Show chat' : 'Hide chat'}
+        aria-label={chatCollapsed ? 'Show chat' : 'Hide chat'}
+      >{chatCollapsed ? '›' : '‹'}</button>
+    </div>
     <section class="preview-pane">
       {#if session.previewUrl}
         <iframe title="preview" src={session.previewUrl}></iframe>
@@ -511,7 +547,18 @@
     flex: 1;
     min-height: 0;
   }
-  .chat-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  /* min-width must be 0 so the grid track can collapse to 0 when chat
+     hidden. `overflow: hidden` keeps the (still-rendered) chat content
+     from spilling out of the 0-width track. */
+  .chat-pane {
+    display: flex; flex-direction: column;
+    min-height: 0; min-width: 0;
+    overflow: hidden;
+  }
+  /* When collapsed, the splitter grid track stays a thin strip — wider
+     than the resize-handle case so the > toggle button is comfortably
+     clickable. */
+  main.chat-collapsed { grid-template-columns: 0 18px 1fr; }
 
   /* Browser-error badge — sits above Chat in the chat pane. Amber
      background + warn glyph mirror the idle-warning header pill, so
@@ -559,8 +606,11 @@
   iframe { flex: 1; border: 0; }
   .placeholder { display: flex; align-items: center; justify-content: center; flex: 1; color: #999; }
 
-  /* Drag handle between the two panes. Stays subtle until hover. */
+  /* Drag handle between the two panes. Stays subtle until hover.
+     Positioned-relative so the collapse-toggle button can absolute-
+     anchor inside. */
   .splitter {
+    position: relative;
     background: #e6e6e6;
     cursor: col-resize;
     transition: background 0.12s;
@@ -568,6 +618,35 @@
     outline: none;
   }
   .splitter:hover { background: #888; }
+  /* When chat is collapsed, the splitter has no drag function — show it
+     as a plain bar with the > toggle in the middle. */
+  main.chat-collapsed .splitter { cursor: default; }
+  main.chat-collapsed .splitter:hover { background: #d8d8d8; }
+
+  /* Collapse-toggle: small chevron pinned to the splitter's vertical
+     midpoint. Subtle until hovered; not a visual focal point but always
+     findable. */
+  .collapse-toggle {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 18px; height: 38px;
+    padding: 0;
+    border: 1px solid #bbb;
+    border-radius: 3px;
+    background: #fafafa;
+    color: #555;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 1; /* over the splitter background */
+  }
+  .collapse-toggle:hover {
+    background: #fff;
+    color: #1f6feb;
+    border-color: #1f6feb;
+  }
 
   /* While dragging: kill iframe interception of pointermove + show the
      col-resize cursor everywhere, even over the iframe. */
