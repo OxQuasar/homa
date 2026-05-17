@@ -66,6 +66,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "review":
+			if err := runReview(os.Args[2:], log); err != nil {
+				log.Error("review failed", "err", err)
+				os.Exit(1)
+			}
+			return
 		case "-h", "--help", "help":
 			fmt.Fprint(os.Stderr, usageText)
 			return
@@ -85,6 +91,7 @@ const usageText = `usage:
   homa [-config PATH]            run the orchestrator (default)
   homa merge <userid>            git-merge user/<userid> → main in site-template/
   homa list                      print all users as 'email | userid' (sorted by created_at)
+  homa review <userid>           print review URLs (preview + vscode) + diff/merge commands
 `
 
 func run(configPath string, log *slog.Logger) error {
@@ -489,6 +496,64 @@ func runList(args []string, log *slog.Logger) error {
 		}
 		fmt.Printf("%s | %s\n", u.Email, u.ID)
 	}
+	return nil
+}
+
+// runReview implements `homa review <userid>`: prints the operator's
+// review surface for a user — preview URL, code-server URL, the host
+// `git diff` command, and the merge command. No DB writes, no
+// container ops. Pure information.
+//
+// Both URLs are accessible to anyone on the operator's tailnet (the
+// tailscale-serve registration is the only gate); the editor's cookie
+// gate doesn't apply to them. So the operator can open them in a
+// browser tab and see the user's site + their VS Code workspace.
+func runReview(args []string, log *slog.Logger) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: homa review <userid>")
+	}
+	userID := args[0]
+	if !userIDPattern.MatchString(userID) {
+		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
+	}
+	cfg, err := config.Load("config.json")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+	u, err := st.GetUserByID(context.Background(), userID)
+	if err != nil {
+		return fmt.Errorf("get user %s: %w", userID, err)
+	}
+
+	host := resolveCodeServerHost(cfg, log)
+	previewURL := ""
+	vscodeURL := ""
+	if cfg.PreviewBaseURL != "" && u.PreviewServePort > 0 {
+		previewURL = fmt.Sprintf("%s:%d/", cfg.PreviewBaseURL, u.PreviewServePort)
+	}
+	if host != "" && u.CodeServerServePort > 0 {
+		vscodeURL = fmt.Sprintf("https://%s:%d/?folder=/workspace", host, u.CodeServerServePort)
+	}
+
+	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
+	fmt.Printf("user:    %s (%s)\n", u.Email, u.ID)
+	if previewURL != "" {
+		fmt.Printf("preview: %s\n", previewURL)
+	} else {
+		fmt.Printf("preview: (unavailable — PreviewBaseURL or port not configured)\n")
+	}
+	if vscodeURL != "" {
+		fmt.Printf("vscode:  %s\n", vscodeURL)
+	} else {
+		fmt.Printf("vscode:  (unavailable — code-server disabled or port not allocated)\n")
+	}
+	fmt.Printf("diff:    git -C %s diff main..user/%s\n", siteDir, u.ID)
+	fmt.Printf("merge:   ./homa merge %s\n", u.ID)
 	return nil
 }
 
