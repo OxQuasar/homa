@@ -36,24 +36,27 @@ var ErrBelowThreshold = errors.New("session below compaction threshold")
 // session_state snapshot, gates on PromptTokens > minTokens, and (if
 // past the gate) sends full_compact and waits for compact_done. Returns:
 //
-//   - nil                                : compaction completed
-//   - ErrBelowThreshold                  : skipped (session too small to matter)
-//   - any other error                    : dial/handshake/timeout/etc
+//   - (promptTokens, nil)               : compaction completed
+//   - (promptTokens, ErrBelowThreshold) : skipped (session too small)
+//   - (0, other error)                  : dial/handshake/timeout/etc
 //
-// Failures here are non-fatal at the lifecycle layer — the caller logs
-// and proceeds to Stop anyway. Skip-below-threshold is also a non-fatal
-// path; the container still gets stopped, the session just doesn't pay
-// the LLM-call cost for a trivial compaction.
+// promptTokens is sess.TokenUsage.TotalInputTokens() observed at the
+// moment of the gate decision — the same number the editor pill shows
+// (input + cache_creation + cache_read). Always returned when the snap
+// was successfully read; lets the lifecycle layer log it on every path
+// (skip or compact-success or compact-failure), so we always have the
+// diagnostic value in the journal without paying a second round-trip.
+// Returns 0 if the snap was never read.
 //
 // `minTokens <= 0` disables the gate (always compact).
-func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) error {
+func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) (int64, error) {
 	url := fmt.Sprintf("ws://127.0.0.1:%d/", nousPort)
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	conn, _, err := websocket.Dial(dialCtx, url, nil)
 	dialCancel()
 	if err != nil {
-		return fmt.Errorf("dial nous: %w", err)
+		return 0, fmt.Errorf("dial nous: %w", err)
 	}
 	conn.SetReadLimit(-1)
 	defer conn.Close(websocket.StatusNormalClosure, "compact done")
@@ -67,7 +70,7 @@ func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir
 		"session_id": sessionID,
 	})
 	if err := conn.Write(roundCtx, websocket.MessageText, hello); err != nil {
-		return fmt.Errorf("write hello: %w", err)
+		return 0, fmt.Errorf("write hello: %w", err)
 	}
 
 	// 2. Read the initial session_state. PromptTokens here is
@@ -76,25 +79,28 @@ func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir
 	// don't pay for trivial summaries.
 	stateEv, err := waitForEvent(roundCtx, conn, "session_state")
 	if err != nil {
-		return fmt.Errorf("waiting for snapshot: %w", err)
+		return 0, fmt.Errorf("waiting for snapshot: %w", err)
 	}
-	if minTokens > 0 && stateEv.SessionState != nil &&
-		stateEv.SessionState.PromptTokens <= minTokens {
-		return ErrBelowThreshold
+	var promptTokens int64
+	if stateEv.SessionState != nil {
+		promptTokens = stateEv.SessionState.PromptTokens
+	}
+	if minTokens > 0 && promptTokens <= minTokens {
+		return promptTokens, ErrBelowThreshold
 	}
 
 	// 3. Request full_compact — the more thorough variant; takes optional
 	// `prompt` instructions which we leave empty (nous picks a default).
 	req, _ := json.Marshal(map[string]string{"type": "full_compact"})
 	if err := conn.Write(roundCtx, websocket.MessageText, req); err != nil {
-		return fmt.Errorf("write full_compact: %w", err)
+		return promptTokens, fmt.Errorf("write full_compact: %w", err)
 	}
 
 	// 4. Wait for compact_done. nous's gateway emits this whether
 	// compaction succeeded or it failed because the session was busy /
 	// observing — in either case we move on to the Stop step.
 	_, err = waitForEvent(roundCtx, conn, "compact_done")
-	return err
+	return promptTokens, err
 }
 
 // eventProbe is the slice of nous's Event JSON the compaction round-trip

@@ -40,9 +40,14 @@ type Hub interface {
 // Compactor is the slice the GC needs to run a full-compact on a user's
 // nous before stopping their container. minTokens gates the actual
 // compact: sessions at or below it return ErrBelowThreshold without
-// triggering an LLM call. Tests substitute a stub.
+// triggering an LLM call. The first return value is the prompt_tokens
+// observed at the gate (= sess.TokenUsage.TotalInputTokens() — input +
+// cache_creation + cache_read) — always returned when the session_state
+// snapshot was read, regardless of whether compaction ran. Lets the
+// lifecycle layer log it on every path for diagnostic value. Tests
+// substitute a stub.
 type Compactor interface {
-	Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) error
+	Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) (int64, error)
 }
 
 // GC drives the compact-then-stop idle lifecycle.
@@ -183,20 +188,25 @@ func (g *GC) compactAndStop(ctx context.Context, u store.UserSummary) {
 		g.log.Info("gc compacting",
 			"user_id", u.ID, "session_id", u.NousSessionID, "nous_port", u.NousPort,
 			"min_tokens", g.compactMinTokens)
-		err := g.compactor.Run(ctx, u.NousPort, u.NousSessionID, workDir,
+		promptTokens, err := g.compactor.Run(ctx, u.NousPort, u.NousSessionID, workDir,
 			g.compactMinTokens, g.compactTimeout)
 		switch {
 		case err == nil:
-			g.log.Info("gc compaction complete", "user_id", u.ID)
+			g.log.Info("gc compaction complete",
+				"user_id", u.ID, "prompt_tokens", promptTokens)
 		case errors.Is(err, ErrBelowThreshold):
 			// Skip is the expected path for small sessions — log at
-			// Info, not Warn. Stop still proceeds.
+			// Info, not Warn. prompt_tokens is what the gate actually
+			// saw, so the operator can verify the decision was right.
 			g.log.Info("gc compaction skipped (session below threshold)",
-				"user_id", u.ID, "min_tokens", g.compactMinTokens)
+				"user_id", u.ID,
+				"prompt_tokens", promptTokens,
+				"min_tokens", g.compactMinTokens)
 		default:
-			// Non-fatal: Stop runs regardless.
+			// Non-fatal: Stop runs regardless. promptTokens may be 0 if
+			// the failure happened before the snapshot was read.
 			g.log.Warn("gc compaction failed; proceeding to stop",
-				"user_id", u.ID, "err", err)
+				"user_id", u.ID, "prompt_tokens", promptTokens, "err", err)
 		}
 	}
 

@@ -92,21 +92,23 @@ func (h *fakeHub) SendToUser(userID string, raw []byte) int {
 	return 1
 }
 
-// fakeCompactor records compaction calls; configurable error.
+// fakeCompactor records compaction calls; configurable return value
+// (promptTokens) + error. Defaults: promptTokens=0, err=nil → success.
 type fakeCompactor struct {
-	mu        sync.Mutex
-	calls     []string // sessionIDs the compactor was asked to run on
-	minTokens []int64  // minTokens passed each call
-	err       error
+	mu                sync.Mutex
+	calls             []string // sessionIDs the compactor was asked to run on
+	minTokens         []int64  // minTokens passed each call
+	promptTokensReply int64    // return value
+	err               error
 }
 
-func (c *fakeCompactor) Run(_ context.Context, port int, sessionID, _ string, minTokens int64, _ time.Duration) error {
+func (c *fakeCompactor) Run(_ context.Context, port int, sessionID, _ string, minTokens int64, _ time.Duration) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, sessionID)
 	c.minTokens = append(c.minTokens, minTokens)
 	_ = port
-	return c.err
+	return c.promptTokensReply, c.err
 }
 func (c *fakeCompactor) callCount() int {
 	c.mu.Lock()

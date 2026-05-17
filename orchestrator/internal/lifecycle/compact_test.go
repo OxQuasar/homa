@@ -139,7 +139,7 @@ func TestCompactClientHappyPath(t *testing.T) {
 		compactDoneFrame(""),
 	})
 	c := CompactClient{}
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 3*time.Second)
 	if err != nil {
 		t.Fatalf("Run: got %v, want nil", err)
@@ -158,21 +158,46 @@ func TestCompactClientHappyPath(t *testing.T) {
 }
 
 // TestCompactClientBelowThresholdGate — session below minTokens; client
-// returns ErrBelowThreshold and DOES NOT send full_compact (the fake
-// nous's lastRequest stays empty).
+// returns ErrBelowThreshold and DOES NOT send full_compact. Also
+// asserts that the prompt_tokens value is surfaced in the return — the
+// lifecycle layer needs it for the skipped-log line so operators can
+// see what the gate actually saw.
 func TestCompactClientBelowThresholdGate(t *testing.T) {
 	fn := newFakeNous(t, [][]byte{
 		sessionStateFrame(2_000), // well below 50k gate
 		compactDoneFrame(""),     // never reached
 	})
 	c := CompactClient{}
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	promptTokens, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 3*time.Second)
 	if !errors.Is(err, ErrBelowThreshold) {
 		t.Fatalf("Run: got %v, want ErrBelowThreshold", err)
 	}
+	if promptTokens != 2_000 {
+		t.Errorf("promptTokens returned: got %d, want 2000 (matches snap value)", promptTokens)
+	}
 	if fn.lastRequest() != "" {
 		t.Errorf("client sent a request despite below-threshold: %q", fn.lastRequest())
+	}
+}
+
+// TestCompactClientReturnsPromptTokensOnSuccess — even when the gate
+// passes and compaction runs, the snap's prompt_tokens is returned to
+// the caller. Lifecycle uses it in the 'gc compaction complete' log
+// line so operators see why each compaction was allowed through.
+func TestCompactClientReturnsPromptTokensOnSuccess(t *testing.T) {
+	fn := newFakeNous(t, [][]byte{
+		sessionStateFrame(123_456),
+		compactDoneFrame(""),
+	})
+	c := CompactClient{}
+	promptTokens, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+		/*minTokens*/ 50_000, /*timeout*/ 3*time.Second)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if promptTokens != 123_456 {
+		t.Errorf("promptTokens: got %d, want 123456", promptTokens)
 	}
 }
 
@@ -184,7 +209,7 @@ func TestCompactClientGateDisabled(t *testing.T) {
 		compactDoneFrame(""),
 	})
 	c := CompactClient{}
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 0, /*timeout*/ 3*time.Second)
 	if err != nil {
 		t.Fatalf("Run with gate disabled: got %v, want nil", err)
@@ -202,7 +227,7 @@ func TestCompactClientGateBoundary(t *testing.T) {
 		compactDoneFrame(""),
 	})
 	c := CompactClient{}
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 3*time.Second)
 	if !errors.Is(err, ErrBelowThreshold) {
 		t.Errorf("gate boundary (==): got %v, want ErrBelowThreshold", err)
@@ -219,7 +244,7 @@ func TestCompactClientCompactDoneWithError(t *testing.T) {
 		compactDoneFrame("session busy"),
 	})
 	c := CompactClient{}
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 3*time.Second)
 	if err == nil {
 		t.Fatal("Run: got nil, want non-nil error from compact_done.err_str")
@@ -242,7 +267,7 @@ func TestCompactClientTimeout(t *testing.T) {
 	fn.PreSendDelay = 500 * time.Millisecond
 	c := CompactClient{}
 	// Timeout shorter than the server's delay.
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("Run: got nil, want timeout error")
@@ -258,7 +283,7 @@ func TestCompactClientDialFailure(t *testing.T) {
 	ln.Close()
 
 	c := CompactClient{}
-	err := c.Run(context.Background(), port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 1*time.Second)
 	if err == nil {
 		t.Fatal("Run against closed port: got nil, want dial error")
@@ -280,7 +305,7 @@ func TestCompactClientHelloOnlyWhenGated(t *testing.T) {
 		sessionStateFrame(1000),
 	})
 	c := CompactClient{}
-	err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
+	_, err := c.Run(context.Background(), fn.port, "sess-x", "/workspace",
 		/*minTokens*/ 50_000, /*timeout*/ 3*time.Second)
 	if !errors.Is(err, ErrBelowThreshold) {
 		t.Errorf("got %v, want ErrBelowThreshold", err)
