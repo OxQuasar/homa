@@ -102,13 +102,21 @@ To change the **default for new users**, edit `~/homa/sandbox/nous.config.json` 
 ## Inspect
 
 ```bash
-# Users
-sqlite3 ~/homa/data/homa.db '
-  select id, email, container_name,
-    datetime(created_at, "unixepoch")     as created,
-    datetime(last_active_at, "unixepoch") as ws_tick,
-    datetime(last_message_at, "unixepoch") as last_msg
-  from users order by created_at'
+# Users — pretty table via the python venv (sqlite3 CLI not installed):
+~/nous/.venv/bin/python - <<'PY'
+import sqlite3, datetime
+c = sqlite3.connect('/home/quasar/homa/data/homa.db')
+print(f"{'id':<10} {'email':<25} {'created':<17} {'last_msg':<17} {'nous':<5} {'preview':<8} {'code':<5}")
+print('-' * 92)
+for r in c.execute('''SELECT id, email, created_at, last_message_at,
+                             nous_port, preview_serve_port, code_server_serve_port
+                      FROM users ORDER BY created_at'''):
+    fmt = lambda t: datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc).strftime('%Y-%m-%d %H:%M') if t else '-'
+    print(f"{r[0]:<10} {r[1]:<25} {fmt(r[2]):<17} {fmt(r[3]):<17} {r[4]:<5} {r[5]:<8} {r[6]:<5}")
+PY
+
+# Or raw SQL if sqlite3 CLI is installed:
+# sqlite3 ~/homa/data/homa.db 'SELECT id, email, datetime(created_at,"unixepoch") FROM users'
 
 # Running containers (user + main)
 podman ps --filter name=homa-
