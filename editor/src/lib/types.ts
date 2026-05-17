@@ -146,6 +146,11 @@ export interface BufferedError {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
+  // unix ms when the message originated. For user messages: when Send was
+  // clicked. For assistant messages: when streaming began (the start of
+  // the LLM response). For rehydrated messages: parsed from
+  // NousMessage.created_at; 0 if missing.
+  createdAt: number;
   // Tool calls captured while assistant message was streaming, or rehydrated
   // from history. `output` is filled in when the matching tool_result is
   // seen (later in the same or a following message).
@@ -163,4 +168,9 @@ export interface ToolCall {
 export interface Streaming {
   text: string;
   tools: ToolCall[];
+  // unix ms when this streaming bubble first appeared (first text/tool
+  // delta of the assistant turn). Used as the createdAt of the resulting
+  // ChatMessage when flushed; also surfaced in the live bubble so the
+  // timestamp doesn't pop in only after the run ends.
+  startedAt: number;
 }

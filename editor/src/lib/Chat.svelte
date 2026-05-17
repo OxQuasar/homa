@@ -19,10 +19,16 @@
   } = $props();
 
   // Pseudo-message for the in-flight assistant turn, so it renders identically
-  // to a completed assistant message.
+  // to a completed assistant message. createdAt is the streaming.startedAt
+  // so the timestamp appears the moment streaming begins, not when it ends.
   const liveMessage = $derived<ChatMessage | null>(
     streaming
-      ? { role: 'assistant', text: streaming.text, tools: streaming.tools }
+      ? {
+          role: 'assistant',
+          text: streaming.text,
+          tools: streaming.tools,
+          createdAt: streaming.startedAt
+        }
       : null
   );
 

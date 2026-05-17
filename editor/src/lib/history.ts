@@ -66,10 +66,20 @@ export function hydrateMessages(msgs: NousMessage[] | undefined): ChatMessage[] 
     out.push({
       role: m.role,
       text,
+      createdAt: parseCreatedAt(m.created_at),
       ...(tools.length ? { tools } : {})
     });
   }
   return out;
+}
+
+// parseCreatedAt converts nous's ISO timestamp string to unix ms.
+// Returns 0 when the field is missing or unparseable — the renderer
+// hides the timestamp UI on zero. Pure helper for testability.
+function parseCreatedAt(s: string | undefined): number {
+  if (!s) return 0;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : 0;
 }
 
 function collectText(parts: Part[]): string {

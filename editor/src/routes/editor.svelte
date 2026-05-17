@@ -249,7 +249,7 @@
         break;
 
       case 'text_delta':
-        if (!session.streaming) session.streaming = { text: '', tools: [] };
+        if (!session.streaming) session.streaming = { text: '', tools: [], startedAt: Date.now() };
         session.streaming.text += ev.delta ?? '';
         break;
 
@@ -259,7 +259,7 @@
           name: ev.tool_name ?? '?',
           input: ev.tool_input ?? ''
         };
-        if (!session.streaming) session.streaming = { text: '', tools: [] };
+        if (!session.streaming) session.streaming = { text: '', tools: [], startedAt: Date.now() };
         session.streaming.tools.push(t);
         break;
       }
@@ -293,7 +293,8 @@
     session.messages.push({
       role: 'assistant',
       text: session.streaming.text,
-      tools: session.streaming.tools
+      tools: session.streaming.tools,
+      createdAt: session.streaming.startedAt
     });
     session.streaming = null;
   }
@@ -306,7 +307,7 @@
     errorBuffer = [];
     errorsExpanded = false;
 
-    session.messages.push({ role: 'user', text: prompt });
+    session.messages.push({ role: 'user', text: prompt, createdAt: Date.now() });
     session.status = 'running';
     // Any user message resets the server-side idle clock, so the
     // warning banner (if showing) becomes stale immediately. Clear it
