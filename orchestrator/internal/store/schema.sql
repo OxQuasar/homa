@@ -47,3 +47,24 @@ CREATE TABLE IF NOT EXISTS forum_posts (
 );
 CREATE INDEX IF NOT EXISTS idx_forum_posts_topic_created
   ON forum_posts(topic_id, created_at DESC);
+
+-- Direct messages between users. Flat 1:1 for v1 (no conversations
+-- table) — a "thread" is implied by the (sender, recipient) pair.
+-- read_at is null while unread; set when the recipient first opens
+-- the thread.
+CREATE TABLE IF NOT EXISTS private_messages (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  sender_id    TEXT NOT NULL REFERENCES users(id),
+  recipient_id TEXT NOT NULL REFERENCES users(id),
+  content      TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,                -- unix seconds UTC
+  read_at      INTEGER                          -- null = unread
+);
+-- Unread-count queries: (recipient_id, read_at IS NULL).
+CREATE INDEX IF NOT EXISTS idx_pm_recipient_unread
+  ON private_messages(recipient_id, read_at);
+-- Thread lookup in both directions; ORDER BY created_at uses these.
+CREATE INDEX IF NOT EXISTS idx_pm_sent
+  ON private_messages(sender_id, recipient_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_pm_received
+  ON private_messages(recipient_id, sender_id, created_at);

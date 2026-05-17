@@ -31,6 +31,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/config"
 	"github.com/skipper/homa/orchestrator/internal/cors"
 	"github.com/skipper/homa/orchestrator/internal/forum"
+	"github.com/skipper/homa/orchestrator/internal/messages"
 	"github.com/skipper/homa/orchestrator/internal/usersapi"
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
 	"github.com/skipper/homa/orchestrator/internal/mainsite"
@@ -211,6 +212,9 @@ func run(configPath string, log *slog.Logger) error {
 
 	// Public people directory — same auth + CORS posture as forum.
 	usersapi.New(st, log).Register(mux, authSvc, corsPolicy.Middleware)
+
+	// Direct messages between users. Same auth + CORS posture.
+	messages.New(messages.NewStore(st.DB()), log).Register(mux, authSvc, corsPolicy.Middleware)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)
