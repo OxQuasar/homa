@@ -102,6 +102,11 @@
   let activeTab = $state<ActiveTab>({ kind: 'ai' });
   let dmTabs = $state<DmTab[]>([]);
   let dmThreads = $state<Record<string, ChatMessage[]>>({});
+  // Per-tab input drafts so switching tabs doesn't leak text intended
+  // for one recipient to another (B1). Key: 'ai' for the AI tab,
+  // 'dm:<peerId>' for each DM. Drafts are NOT persisted across reload
+  // — too much surface for stale state; clear is the safe default.
+  let drafts = $state<Record<string, string>>({});
   // Per-peer unread count, refreshed from /api/messages/conversations.
   let dmUnread = $state<Record<string, number>>({});
   // Conversations list (from poll); drives picker + aggregates unread.
@@ -128,6 +133,14 @@
   const activeStatus = $derived<'idle' | 'running'>(
     activeTab.kind === 'ai' ? session.status : 'idle'
   );
+  // Current tab's draft string + setter. Keyed by activeTab so Input's
+  // text is naturally per-tab; setDraft writes to the right key on
+  // every keystroke.
+  const draftKey = $derived(activeTab.kind === 'ai' ? 'ai' : 'dm:' + activeTab.peerId);
+  const currentDraft = $derived(drafts[draftKey] ?? '');
+  function setDraft(v: string) {
+    drafts = { ...drafts, [draftKey]: v };
+  }
 
   // Polling timers — cleared on unmount.
   let unreadTimer: ReturnType<typeof setInterval> | null = null;
@@ -281,6 +294,10 @@
     // picker badge populates without waiting a full interval.
     void refreshConversations();
     unreadTimer = setInterval(refreshConversations, UNREAD_INTERVAL_MS);
+
+    // B5: pause polling while the browser tab is hidden; resume +
+    // catch-up when visible again.
+    document.addEventListener('visibilitychange', onVisibilityChange);
   });
 
   // Persist tabs + active tab on every change. $effect runs after the
@@ -299,6 +316,9 @@
 
   onDestroy(() => {
     window.removeEventListener('message', onIframeMessage);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
     if (unreadTimer) clearInterval(unreadTimer);
     if (activeThreadTimer) clearInterval(activeThreadTimer);
     ws?.close();
@@ -309,26 +329,44 @@
 
   // --- DM lifecycle helpers ------------------------------------------
 
+  // handleDmError centralizes the response to 401 (cookie expired or
+  // server-cleared → logout) and 404 on a thread fetch (peer was
+  // deleted → drop the dead tab). Other errors are logged + ignored
+  // (DMs are non-critical).
+  //   peerId: the peer this error is associated with (for 404 cleanup);
+  //           pass '' if the error wasn't bound to a specific tab.
+  function handleDmError(e: unknown, peerId: string): void {
+    const status = (e as { status?: number })?.status;
+    if (status === 401) {
+      // B8: cookie invalid. Same flow as the WS-closed auto-logout.
+      onLogout();
+      return;
+    }
+    if (status === 404 && peerId) {
+      // B7: peer no longer exists. Drop the tab silently.
+      console.warn('DM: dropping dead tab', peerId);
+      closeDm(peerId);
+      return;
+    }
+    console.warn('DM:', e);
+  }
+
   async function refreshConversations() {
     try {
       const convos = await fetchConversations();
       dmConversations = convos;
-      // Build per-peer unread map from the list. Picker badge uses the
-      // full list; per-tab badge uses this map.
       const next: Record<string, number> = {};
       for (const c of convos) next[c.peer_id] = c.unread_count;
       dmUnread = next;
-      // Lazy-load the "all users" list the first time the user opens
-      // the picker, not on every refresh; cached for the session.
     } catch (e) {
-      // Soft-fail: DMs are a non-critical feature, log and continue.
-      console.warn('refreshConversations:', e);
+      handleDmError(e, '');
     }
   }
 
-  async function refreshActiveThread() {
-    if (activeTab.kind !== 'dm') return;
-    const peerId = activeTab.peerId;
+  // refreshThread fetches a specific peer's thread by id (B3 fix:
+  // callers explicitly pass peerId so a tab switch mid-flight doesn't
+  // refresh the wrong thread).
+  async function refreshThread(peerId: string) {
     try {
       const msgs = await fetchThread(peerId);
       dmThreads = { ...dmThreads, [peerId]: dmsToChatMessages(msgs, selfUserId) };
@@ -336,8 +374,17 @@
       // reflect that in the per-peer unread map + picker badge.
       void refreshConversations();
     } catch (e) {
-      console.warn('refreshActiveThread:', e);
+      handleDmError(e, peerId);
     }
+  }
+
+  // refreshActiveThread: thin wrapper for the polling timer that
+  // captures the active tab at call time. Captures the peer at
+  // dispatch, so a tab switch between tick and HTTP completion still
+  // refreshes the right peer's thread.
+  async function refreshActiveThread() {
+    if (activeTab.kind !== 'dm') return;
+    await refreshThread(activeTab.peerId);
   }
 
   // Switch active tab. Clears any per-thread polling timer and (if
@@ -349,21 +396,25 @@
       activeThreadTimer = null;
     }
     if (t.kind === 'dm') {
-      void refreshActiveThread();
+      void refreshThread(t.peerId);
       activeThreadTimer = setInterval(refreshActiveThread, ACTIVE_THREAD_INTERVAL_MS);
     }
   }
 
-  // Open (or focus) a DM tab. peerId + username are passed in by the
-  // picker; tab open-state lives entirely in the editor.
   function openDm(peerId: string, username: string) {
     dmTabs = openTab(dmTabs, { peerId, username });
     selectTab({ kind: 'dm', peerId });
   }
 
-  // Close a DM tab. If it was active, fall back to AI.
+  // Close a DM tab. If it was active, fall back to AI. Also evicts
+  // the cached thread + draft for this peer (B4) so closed-tab memory
+  // doesn't accumulate.
   function closeDm(peerId: string) {
     dmTabs = closeTab(dmTabs, peerId);
+    const { [peerId]: _threadGone, ...restThreads } = dmThreads;
+    dmThreads = restThreads;
+    const { ['dm:' + peerId]: _draftGone, ...restDrafts } = drafts;
+    drafts = restDrafts;
     if (activeTab.kind === 'dm' && activeTab.peerId === peerId) {
       selectTab({ kind: 'ai' });
     }
@@ -374,12 +425,37 @@
     if (dmAllUsers.length === 0) {
       try {
         const r = await fetch('/api/users', { credentials: 'include' });
+        if (r.status === 401) { onLogout(); return; }
         if (r.ok) dmAllUsers = await r.json();
       } catch (e) {
         console.warn('fetch users:', e);
       }
     }
     pickerOpen = true;
+  }
+
+  // --- B5: pause polling while document hidden ----------------------
+  //
+  // Browser tabs in background don't need real-time updates; pausing
+  // saves bandwidth + battery. On visibility-back, fetch once
+  // immediately to catch up (poll interval would otherwise leave a
+  // gap up to UNREAD_INTERVAL_MS).
+
+  function onVisibilityChange() {
+    if (typeof document === 'undefined') return;
+    if (document.hidden) {
+      if (unreadTimer) { clearInterval(unreadTimer); unreadTimer = null; }
+      if (activeThreadTimer) { clearInterval(activeThreadTimer); activeThreadTimer = null; }
+    } else {
+      if (!unreadTimer) {
+        unreadTimer = setInterval(refreshConversations, UNREAD_INTERVAL_MS);
+        void refreshConversations();
+      }
+      if (activeTab.kind === 'dm' && !activeThreadTimer) {
+        activeThreadTimer = setInterval(refreshActiveThread, ACTIVE_THREAD_INTERVAL_MS);
+        void refreshActiveThread();
+      }
+    }
   }
 
   function onIframeMessage(e: MessageEvent) {
@@ -476,6 +552,10 @@
   }
 
   function onSend(text: string) {
+    // Clear THIS tab's draft (the one Send was clicked on). Input.svelte
+    // no longer owns text state, so the parent must clear after submit.
+    setDraft('');
+
     // Routing: AI tab → nous WS; DM tab → POST /api/messages/with/<peer>.
     if (activeTab.kind === 'dm') {
       void sendActiveDm(text);
@@ -504,6 +584,9 @@
   // tick will return the authoritative version (with server-assigned
   // id + canonical timestamp); replacing is fine since the thread is
   // re-rendered wholesale on poll.
+  //
+  // B3: peerId captured at call time so a tab switch between dispatch
+  // and HTTP completion doesn't refresh the wrong thread.
   async function sendActiveDm(text: string) {
     if (activeTab.kind !== 'dm') return;
     const peerId = activeTab.peerId;
@@ -519,12 +602,18 @@
     };
     try {
       await sendDm(peerId, text);
-      // Pull authoritative thread so any race with peer reply also
-      // surfaces; optimistic message will be replaced with the canonical.
-      void refreshActiveThread();
+      // Refresh THIS peer's thread (not whoever's active now). Optimistic
+      // message gets replaced with the canonical server version.
+      void refreshThread(peerId);
     } catch (e) {
+      // 401 → logout, 404 → peer deleted (drop tab). Otherwise mark
+      // the optimistic message as failed.
+      const status = (e as { status?: number })?.status;
+      if (status === 401 || status === 404) {
+        handleDmError(e, peerId);
+        return;
+      }
       console.warn('sendDm:', e);
-      // Mark the optimistic message as failed (cheap signal: prefix with ⚠)
       const arr = dmThreads[peerId] ?? [];
       const last = arr[arr.length - 1];
       if (last) {
@@ -666,6 +755,8 @@
         messages={activeMessages}
         streaming={activeStreaming}
         status={activeStatus}
+        text={currentDraft}
+        onTextChange={setDraft}
         {onSend}
         {onStop}
       />

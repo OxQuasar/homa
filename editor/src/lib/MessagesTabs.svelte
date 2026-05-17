@@ -40,9 +40,28 @@
     if (kind === 'ai') return active.kind === 'ai';
     return active.kind === 'dm' && active.peerId === peerId;
   }
+
+  // B6: keep the active tab visible. When tabs overflow the strip
+  // (many open) and the user activates one off-screen via the picker,
+  // scroll it into view. queueMicrotask defers until Svelte has
+  // applied the active-class update, so the element exists with its
+  // post-update layout.
+  let stripEl: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    active; // dep — re-run when active tab changes
+    if (typeof window === 'undefined' || !stripEl) return;
+    queueMicrotask(() => {
+      const sel =
+        active.kind === 'ai'
+          ? '.tab.ai'
+          : `[data-peer="${CSS.escape(active.peerId)}"]`;
+      const el = stripEl?.querySelector(sel) as HTMLElement | null;
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    });
+  });
 </script>
 
-<div class="strip">
+<div class="strip" bind:this={stripEl}>
   <button
     class="tab ai"
     class:active={isActive('ai')}
@@ -59,6 +78,7 @@
     <div class="tab-wrap" class:active={isActive('dm', t.peerId)}>
       <button
         class="tab dm"
+        data-peer={t.peerId}
         onclick={() => onSelect({ kind: 'dm', peerId: t.peerId })}
         title="DM {t.username}"
       >

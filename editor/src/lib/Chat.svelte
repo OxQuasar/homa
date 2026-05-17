@@ -10,10 +10,16 @@
   import Message from './Message.svelte';
   import Input from './Input.svelte';
 
-  const { messages, streaming, status, onSend, onStop }: {
+  // text + onTextChange are owned by the parent (editor.svelte) so the
+  // input draft is per-tab (per-recipient). Without this, switching
+  // tabs would leave whatever was typed in box, risking sending it to
+  // the wrong recipient. See editor.svelte's `drafts` state.
+  const { messages, streaming, status, text, onTextChange, onSend, onStop }: {
     messages: ChatMessage[];
     streaming: Streaming | null;
     status: 'idle' | 'running';
+    text: string;
+    onTextChange: (v: string) => void;
     onSend: (text: string) => void;
     onStop?: () => void;
   } = $props();
@@ -107,7 +113,7 @@
       </div>
     {/if}
   </div>
-  <Input onSubmit={onSend} {onStop} {status} />
+  <Input {text} {onTextChange} onSubmit={onSend} {onStop} {status} />
 </div>
 
 <style>

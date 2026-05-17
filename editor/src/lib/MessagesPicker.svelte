@@ -14,6 +14,7 @@
   // Parent owns the open/close state + the data; this component just
   // renders + notifies onPick / onClose.
 
+  import { onMount } from 'svelte';
   import type { DmConversation } from './types';
 
   interface UserSummary {
@@ -38,6 +39,17 @@
 
   let query = $state('');
 
+  // B2: Escape-to-close. The backdrop's keydown handler was dead code
+  // (focus lives on the search input, Escape doesn't bubble to a
+  // sibling). Window-level listener fires regardless of focus target.
+  onMount(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
+
   // Users available to start a NEW conversation with: registered, not
   // self, not already in conversations. Filtered by the search query
   // (case-insensitive substring against username).
@@ -51,11 +63,14 @@
   });
 </script>
 
-<!-- backdrop: click outside the panel closes the picker -->
+<!--
+  Backdrop: click anywhere outside the picker closes it. Escape is
+  handled by the window-level listener above (focus is on the search
+  input; Escape wouldn't bubble to a sibling div).
+-->
 <div
   class="backdrop"
   onclick={onClose}
-  onkeydown={(e) => e.key === 'Escape' && onClose()}
   role="button"
   tabindex="-1"
   aria-label="Close picker"

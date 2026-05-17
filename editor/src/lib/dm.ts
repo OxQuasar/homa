@@ -3,6 +3,7 @@
 // here so the heavy lifting can be unit-tested under Vitest and
 // editor.svelte stays focused on wiring.
 
+import type { ApiError } from './api';
 import type {
   ActiveTab,
   ChatMessage,
@@ -12,41 +13,44 @@ import type {
 } from './types';
 
 // --- API client wrappers ----------------------------------------------
-
+//
 // All endpoints are cookie-gated; credentials must travel with the
 // request. The editor is same-origin to the orchestrator, so relative
 // URLs work — no need for an absolute API origin like the cross-origin
 // site-template pages use.
+//
+// All non-2xx responses throw an ApiError carrying .status so callers
+// can branch on 401 (→ logout) and 404 (→ drop tab for dead peer).
+
+async function dmFetch(method: string, path: string, body?: unknown): Promise<Response> {
+  const init: RequestInit = { method, credentials: 'include' };
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, init);
+  if (!r.ok) {
+    const err = new Error(`${method} ${path}: ${r.status}`) as ApiError;
+    err.status = r.status;
+    throw err;
+  }
+  return r;
+}
 
 export async function fetchConversations(): Promise<DmConversation[]> {
-  const r = await fetch('/api/messages/conversations', { credentials: 'include' });
-  if (!r.ok) throw new Error(`conversations: ${r.status}`);
-  return r.json();
+  return (await dmFetch('GET', '/api/messages/conversations')).json();
 }
 
 export async function fetchThread(peerId: string): Promise<DmMessage[]> {
-  const r = await fetch(`/api/messages/with/${encodeURIComponent(peerId)}`, {
-    credentials: 'include'
-  });
-  if (!r.ok) throw new Error(`thread ${peerId}: ${r.status}`);
-  return r.json();
+  return (await dmFetch('GET', `/api/messages/with/${encodeURIComponent(peerId)}`)).json();
 }
 
 export async function sendDm(peerId: string, content: string): Promise<DmMessage> {
-  const r = await fetch(`/api/messages/with/${encodeURIComponent(peerId)}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content })
-  });
-  if (!r.ok) throw new Error(`send ${peerId}: ${r.status}`);
-  return r.json();
+  return (await dmFetch('POST', `/api/messages/with/${encodeURIComponent(peerId)}`, { content })).json();
 }
 
 export async function fetchUnreadCount(): Promise<number> {
-  const r = await fetch('/api/messages/unread-count', { credentials: 'include' });
-  if (!r.ok) throw new Error(`unread: ${r.status}`);
-  const j = (await r.json()) as { count: number };
+  const j = (await (await dmFetch('GET', '/api/messages/unread-count')).json()) as { count: number };
   return j.count ?? 0;
 }
 

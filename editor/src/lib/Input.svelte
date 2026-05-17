@@ -11,13 +11,19 @@
 
   import { upload, type ApiError } from './api';
 
-  const { onSubmit, onStop, status }: {
+  // text + onTextChange are owned by the parent so the input draft can
+  // be per-tab (per-recipient in the DM case). Without this lift, the
+  // same Input instance would carry typed text across tab switches —
+  // risking sending a message intended for one recipient to another.
+  // After submit, parent clears via onTextChange('').
+  const { text, onTextChange, onSubmit, onStop, status }: {
+    text: string;
+    onTextChange: (v: string) => void;
     onSubmit: (text: string) => void;
     onStop?: () => void;
     status: 'idle' | 'running';
   } = $props();
 
-  let text = $state('');
   // Upload UI state. uploadStatus drives the button label + disabled
   // state without leaking back into the parent component.
   let uploadStatus = $state<'idle' | 'busy' | 'error'>('idle');
@@ -32,7 +38,8 @@
     const trimmed = text.trim();
     if (!trimmed) return;
     onSubmit(trimmed);
-    text = '';
+    // Parent clears via onTextChange('') in its onSend handler — Input
+    // doesn't manipulate its own text now that it's a prop.
   }
 
   function onButton() {
@@ -67,7 +74,7 @@
       // Prepend a path hint to whatever the user was already typing.
       // The user adds context: "I uploaded ... use it as the hero".
       const hint = `[uploaded: ${r.path}] `;
-      text = hint + text;
+      onTextChange(hint + text);
       uploadStatus = 'idle';
     } catch (err) {
       const e = err as ApiError;
@@ -100,8 +107,14 @@
     style="display: none"
   />
 
+  <!--
+    Controlled component: value + oninput rather than bind:value. Lets
+    parent own the text state (per-tab drafts) without needing
+    $bindable plumbing through Chat.svelte too.
+  -->
   <textarea
-    bind:value={text}
+    value={text}
+    oninput={(e) => onTextChange((e.currentTarget as HTMLTextAreaElement).value)}
     onkeydown={onKeydown}
     placeholder={running ? 'Compose your next prompt…' : 'Ask homa to change your site…'}
     rows="3"
