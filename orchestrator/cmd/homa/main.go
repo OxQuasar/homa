@@ -72,6 +72,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "reload":
+			if err := runReload(os.Args[2:], log); err != nil {
+				log.Error("reload failed", "err", err)
+				os.Exit(1)
+			}
+			return
 		case "-h", "--help", "help":
 			fmt.Fprint(os.Stderr, usageText)
 			return
@@ -92,6 +98,7 @@ const usageText = `usage:
   homa merge <userid>            git-merge user/<userid> → main in site-template/
   homa list                      print all users as 'email | userid' (sorted by created_at)
   homa review <userid>           print review URLs (preview + vscode) + diff/merge commands
+  homa reload <userid>           stop user's container — next login respawns with current config
 `
 
 func run(configPath string, log *slog.Logger) error {
@@ -554,6 +561,49 @@ func runReview(args []string, log *slog.Logger) error {
 	}
 	fmt.Printf("diff:    git -C %s diff main..user/%s\n", siteDir, u.ID)
 	fmt.Printf("merge:   ./homa merge %s\n", u.ID)
+	return nil
+}
+
+// runReload implements `homa reload <userid>`: podman-stops the user's
+// container. Their next /login or /ws hit triggers EnsureRunning which
+// respawns the container — picking up any host-side changes to the
+// per-user nous config, the sandbox image, the Claude credentials, etc.
+//
+// Persistent state (chat history, code-server settings, installed
+// extensions) survives via the per-user podman volumes; --rm only
+// destroys the running container, not the named volumes.
+func runReload(args []string, log *slog.Logger) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: homa reload <userid>")
+	}
+	userID := args[0]
+	if !userIDPattern.MatchString(userID) {
+		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
+	}
+	cfg, err := config.Load("config.json")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+	u, err := st.GetUserByID(context.Background(), userID)
+	if err != nil {
+		return fmt.Errorf("get user %s: %w", userID, err)
+	}
+	log.Info("reload: stopping container", "user_id", u.ID, "container", u.ContainerName)
+	cmd := exec.Command(cfg.PodmanBin, "stop", "-t", "5", u.ContainerName)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 'no such container' is fine — already stopped; next login
+		// respawns regardless. Other errors surface as failures.
+		return fmt.Errorf("podman stop: %w", err)
+	}
+	log.Info("reload: container stopped; next /login or /ws respawns with current config",
+		"user_id", u.ID, "container", u.ContainerName)
 	return nil
 }
 
