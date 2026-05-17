@@ -25,3 +25,25 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
+
+-- Forum: shared, multi-tenant. Any logged-in user can create topics
+-- and post replies. Read access is also auth-required (forum lives in
+-- the authed section of the public site).
+CREATE TABLE IF NOT EXISTS forum_topics (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,
+  author_id  TEXT NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL                       -- unix seconds UTC
+);
+CREATE INDEX IF NOT EXISTS idx_forum_topics_created
+  ON forum_topics(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS forum_posts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic_id   INTEGER NOT NULL REFERENCES forum_topics(id),
+  author_id  TEXT NOT NULL REFERENCES users(id),
+  content    TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forum_posts_topic_created
+  ON forum_posts(topic_id, created_at DESC);

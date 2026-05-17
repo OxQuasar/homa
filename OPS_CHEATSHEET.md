@@ -228,6 +228,57 @@ systemctl --user restart homa
 
 Image size note: code-server adds ~250 MB. Sandbox image is now ~620 MB total.
 
+## Forum API
+
+Shared multi-tenant forum lives at orchestrator endpoints. All four
+require an authenticated cookie (both reads and writes).
+
+```
+GET  /api/forum/topics
+       → [{id, title, author_id, author_name, created_at, post_count}, …]
+       newest first
+
+POST /api/forum/topics
+       body: {"title": "..."}
+       → created topic JSON
+
+GET  /api/forum/topics/<id>/posts
+       → [{id, topic_id, author_id, author_name, content, created_at}, …]
+       newest first
+
+POST /api/forum/topics/<id>/posts
+       body: {"content": "..."}
+       → created post JSON
+```
+
+Author_name is the user's username (from `users.username`). All
+endpoints CORS-enabled for the configured PreviewBaseURL host (any
+port) so user-iframe-rendered pages can call them cross-origin with
+`credentials: 'include'`.
+
+Example fetch from a SvelteKit page (see `site-template/src/routes/forum/`
+for the full reference implementation):
+
+```ts
+const r = await fetch('https://gandiva.kingfisher-celsius.ts.net/api/forum/topics', {
+  credentials: 'include'
+});
+if (r.status === 401) { /* show login prompt */ }
+const topics = await r.json();
+```
+
+Wiring your own styled forum page to the API: prompt your LLM in
+`/editor` something like:
+
+> Wire the existing /forum page's "create topic" form to
+> POST https://gandiva.kingfisher-celsius.ts.net/api/forum/topics
+> with credentials:'include' and body {title}. Show topics from
+> GET /api/forum/topics. Use the API's author_name field where the
+> design references the author.
+
+The shared SQLite owns the data — posts from any logged-in user land
+in the same place and become visible to all other users.
+
 ## Browser errors → LLM
 
 A `<script>` baked into `site-template/src/app.html` captures

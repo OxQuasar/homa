@@ -253,6 +253,12 @@ func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
 // Close releases the underlying database handle.
 func (s *Store) Close() error { return s.db.Close() }
 
+// DB exposes the underlying *sql.DB so peer packages (forum, future
+// admin/audit/etc.) can layer their own queries onto the shared SQLite
+// instance without re-importing all of store. Caller owns nothing —
+// must not Close.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // CreateUser inserts a new user. Caller is responsible for hashing passwords
 // and supplying provisioned fields. If LastMessageAt is left zero, it's
 // seeded with CreatedAt so the user's 60-min idle window starts at signup

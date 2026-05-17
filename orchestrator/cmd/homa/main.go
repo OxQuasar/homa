@@ -30,6 +30,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/codeurl"
 	"github.com/skipper/homa/orchestrator/internal/config"
 	"github.com/skipper/homa/orchestrator/internal/cors"
+	"github.com/skipper/homa/orchestrator/internal/forum"
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
 	"github.com/skipper/homa/orchestrator/internal/mainsite"
 	"github.com/skipper/homa/orchestrator/internal/provision"
@@ -201,6 +202,11 @@ func run(configPath string, log *slog.Logger) error {
 	// returns {enabled: false} so the editor hides the button.
 	codeServerHost := resolveCodeServerHost(cfg, log)
 	codeurl.NewHandler(codeServerHost, codeServerSecret, log).Register(mux, authSvc)
+
+	// Forum endpoints. Auth-required (reads + writes); CORS-wrapped so
+	// the user's iframe-served forum page can call them cross-origin
+	// from <PreviewBaseURL>:<user-port>.
+	forum.New(forum.NewStore(st.DB()), log).Register(mux, authSvc, corsPolicy.Middleware)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)
