@@ -108,7 +108,10 @@ func newRig(t *testing.T) *rig {
 // signup makes one /signup call and returns the cookie + user_id.
 func (r *rig) signup(client *http.Client, email, password string) (string, string) {
 	r.t.Helper()
-	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	body, _ := json.Marshal(map[string]string{
+		"email": email, "password": password,
+		"username": store.DeriveUsername(email),
+	})
 	resp, err := client.Post(r.orchSrv.URL+"/signup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		r.t.Fatalf("signup %s: %v", email, err)

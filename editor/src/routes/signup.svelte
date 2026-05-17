@@ -3,16 +3,22 @@
 
   let email = $state('');
   let password = $state('');
+  let username = $state('');
   let name = $state('');
   let error = $state<string | null>(null);
   let submitting = $state(false);
+
+  // Strict ASCII pattern mirroring orchestrator's usernamePattern. Browser
+  // `pattern` attribute gives instant feedback before submit; server still
+  // validates (canonical source of truth).
+  const usernameRegex = '^[a-z0-9_]{3,32}$';
 
   async function onSubmit(e: SubmitEvent) {
     e.preventDefault();
     error = null;
     submitting = true;
     try {
-      await signup(email, password, name || undefined);
+      await signup(email, password, username, name || undefined);
       window.location.hash = '#/editor';
     } catch (err) {
       error = (err as Error).message;
@@ -27,6 +33,21 @@
     <h1>Create account</h1>
     <label>Email <input type="email" bind:value={email} required autocomplete="email" /></label>
     <label>Password <input type="password" bind:value={password} required minlength="8" autocomplete="new-password" /></label>
+    <label>
+      Username
+      <input
+        type="text"
+        bind:value={username}
+        required
+        pattern={usernameRegex}
+        minlength="3"
+        maxlength="32"
+        autocomplete="username"
+        title="3-32 chars; lowercase a-z, digits, underscore"
+        placeholder="e.g. alice_42"
+      />
+      <small>Shown on forum posts. 3-32 chars: a-z, 0-9, _</small>
+    </label>
     <label>Name (optional) <input type="text" bind:value={name} autocomplete="name" /></label>
     {#if error}<div class="error">{error}</div>{/if}
     <button type="submit" disabled={submitting}>{submitting ? '…' : 'Sign up'}</button>
@@ -39,6 +60,7 @@
   .card { display: flex; flex-direction: column; gap: 0.75rem; width: 100%; max-width: 360px; padding: 1.5rem; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
   h1 { margin: 0 0 0.5rem; font-size: 1.4rem; }
   label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }
+  small { color: #666; font-size: 0.72rem; }
   input { padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; }
   .error { color: #c00; font-size: 0.9rem; }
   button { padding: 0.6rem; background: #222; color: white; border: none; border-radius: 4px; cursor: pointer; }

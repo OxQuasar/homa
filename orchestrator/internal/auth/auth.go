@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/mail"
+	"regexp"
 	"strings"
 	"time"
 
@@ -38,6 +39,12 @@ const (
 	minPasswordLen = 8
 	bcryptCost     = bcrypt.DefaultCost
 )
+
+// usernamePattern is the strict charset/length constraint enforced at
+// signup. Lowercase ascii letters, digits, underscore; 3-32 chars. Keeps
+// usernames URL-safe (so `/forum/by/<username>` routes never need
+// escaping) and free of look-alike Unicode tricks.
+var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
 
 // Service holds the dependencies shared by all auth handlers.
 type Service struct {
@@ -78,6 +85,7 @@ type signupReq struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Name     string `json:"name"`
+	Username string `json:"username"`
 }
 
 type loginReq struct {
@@ -92,6 +100,7 @@ type userIDResp struct {
 type meResp struct {
 	UserID        string `json:"user_id"`
 	Email         string `json:"email"`
+	Username      string `json:"username"`
 	PreviewURL    string `json:"preview_url"`
 	NousSessionID string `json:"nous_session_id"`
 }
@@ -113,6 +122,12 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Password) < minPasswordLen {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("password must be at least %d characters", minPasswordLen))
+		return
+	}
+	req.Username = strings.TrimSpace(strings.ToLower(req.Username))
+	if !usernamePattern.MatchString(req.Username) {
+		writeError(w, http.StatusBadRequest,
+			"username must be 3-32 chars, lowercase a-z / 0-9 / underscore")
 		return
 	}
 
@@ -174,6 +189,7 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		Email:            req.Email,
 		PasswordHash:     string(hash),
 		Name:             req.Name,
+		Username:         req.Username,
 		BranchName:       prov.BranchName,
 		WorktreePath:     prov.WorktreePath,
 		ContainerName:    prov.ContainerName,
@@ -187,6 +203,10 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CreateUser(r.Context(), u); err != nil {
 		if store.IsEmailUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "email already registered")
+			return
+		}
+		if store.IsUsernameUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "username already taken")
 			return
 		}
 		s.log.Error("create user failed", "err", err)
@@ -278,6 +298,7 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, meResp{
 		UserID:        u.ID,
 		Email:         u.Email,
+		Username:      u.Username,
 		PreviewURL:    s.previewURLFor(u),
 		NousSessionID: u.NousSessionID,
 	})

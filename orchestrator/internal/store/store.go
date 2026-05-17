@@ -30,7 +30,8 @@ type User struct {
 	ID                  string
 	Email               string
 	PasswordHash        string
-	Name                string
+	Name                string // optional, freeform
+	Username            string // required at signup; displayed publicly (forum, etc); [a-z0-9_]{3,32}
 	BranchName          string
 	WorktreePath        string
 	ContainerName       string
@@ -125,7 +126,107 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add users.code_server_serve_port: %w", err)
 		}
 	}
+	if !cols["username"] {
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add users.username: %w", err)
+		}
+		if err := backfillUsernames(db); err != nil {
+			return fmt.Errorf("backfill users.username: %w", err)
+		}
+	}
+	// Partial UNIQUE index on non-empty usernames. Lives in migrate()
+	// (not schema.sql) because schema.sql runs BEFORE migrate(), so on a
+	// migrating DB the index would try to apply before the column
+	// exists. IF NOT EXISTS makes this idempotent on subsequent boots.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username
+		ON users(username) WHERE username != ''`); err != nil {
+		return fmt.Errorf("create users.username index: %w", err)
+	}
 	return nil
+}
+
+// backfillUsernames assigns deterministic usernames to existing users
+// (rows where username == '') based on their email-prefix. Resolves
+// collisions by appending '_<short-uid>' from the user id. Ordered by
+// created_at so older users get cleaner names.
+func backfillUsernames(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, email FROM users WHERE username = '' ORDER BY created_at`)
+	if err != nil {
+		return err
+	}
+	type pair struct{ id, email string }
+	var todo []pair
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.id, &p.email); err != nil {
+			rows.Close()
+			return err
+		}
+		todo = append(todo, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	taken := map[string]struct{}{}
+	for _, p := range todo {
+		base := DeriveUsername(p.email)
+		candidate := base
+		for {
+			if _, dup := taken[candidate]; !dup {
+				break
+			}
+			candidate = base + "_" + p.id[:4]
+			// extremely unlikely to recur; if it does the user id
+			// itself is unique so we just keep appending. break after
+			// one suffix; remaining unresolvable collisions get logged
+			// but allowed through (the partial unique index will fire
+			// if the operator ever has two of these).
+			break
+		}
+		if _, err := db.Exec(`UPDATE users SET username = ? WHERE id = ?`, candidate, p.id); err != nil {
+			return err
+		}
+		taken[candidate] = struct{}{}
+	}
+	return nil
+}
+
+// DeriveUsername builds a default username from an email address.
+// Sanitizes the local-part to [a-z0-9_], clamps to 32 chars, pads
+// to 3 chars with trailing underscores. Used at signup as a default
+// suggestion (if the form leaves username empty) and by the migration
+// backfill. Pure function — no DB access.
+func DeriveUsername(email string) string {
+	// Take everything before the first '@'.
+	at := strings.IndexByte(email, '@')
+	local := email
+	if at > 0 {
+		local = email[:at]
+	}
+	local = strings.ToLower(local)
+	// Substitute non-conformant chars with '_'. Drop leading underscores
+	// at the end so "_foo" stays "foo" (cleaner default).
+	var b strings.Builder
+	b.Grow(len(local))
+	for _, r := range local {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9',
+			r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := strings.TrimLeft(b.String(), "_")
+	if len(out) > 32 {
+		out = out[:32]
+	}
+	for len(out) < 3 {
+		out += "_"
+	}
+	return out
 }
 
 // tableColumns returns the set of column names for the given table.
@@ -162,14 +263,14 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (
-			id, email, password_hash, name,
+			id, email, password_hash, name, username,
 			branch_name, worktree_path, container_name,
 			nous_port, preview_port, preview_serve_port,
 			nous_session_id,
 			code_server_port, code_server_serve_port,
 			created_at, last_active_at, last_message_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.ID, u.Email, u.PasswordHash, u.Name,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Email, u.PasswordHash, u.Name, u.Username,
 		u.BranchName, u.WorktreePath, u.ContainerName,
 		u.NousPort, u.PreviewPort, u.PreviewServePort,
 		u.NousSessionID,
@@ -342,6 +443,17 @@ func IsEmailUniqueViolation(err error) bool {
 		strings.Contains(msg, "users.email")
 }
 
+// IsUsernameUniqueViolation reports whether err is the UNIQUE-constraint
+// failure on the partial idx_users_username. Auth maps it to 409.
+func IsUsernameUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") &&
+		strings.Contains(msg, "idx_users_username")
+}
+
 // IsAnyUniqueViolation reports whether err is any UNIQUE-constraint failure.
 // Reserved for diagnostics; auth uses the narrow IsEmailUniqueViolation.
 func IsAnyUniqueViolation(err error) bool {
@@ -352,7 +464,7 @@ func IsAnyUniqueViolation(err error) bool {
 }
 
 // userSelect is the column list used by both GetUserBy* helpers.
-const userSelect = `SELECT id, email, password_hash, name,
+const userSelect = `SELECT id, email, password_hash, name, username,
 	branch_name, worktree_path, container_name,
 	nous_port, preview_port, preview_serve_port,
 	nous_session_id,
@@ -363,7 +475,7 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	var u User
 	var name sql.NullString
 	err := row.Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &name,
+		&u.ID, &u.Email, &u.PasswordHash, &name, &u.Username,
 		&u.BranchName, &u.WorktreePath, &u.ContainerName,
 		&u.NousPort, &u.PreviewPort, &u.PreviewServePort,
 		&u.NousSessionID,

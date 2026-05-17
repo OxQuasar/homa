@@ -153,7 +153,7 @@ func TestAssetsMissingFile404(t *testing.T) {
 // the same mux as auth.Register doesn't clobber the POST handlers.
 func TestExistingPostRoutesUnchanged(t *testing.T) {
 	srv, client := newTestMux(t)
-	body, _ := json.Marshal(map[string]string{"email": "p@b.co", "password": "hunter22"})
+	body, _ := json.Marshal(map[string]string{"email": "p@b.co", "password": "hunter22", "username": "pbcouser"})
 	resp, err := client.Post(srv.URL+"/signup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)

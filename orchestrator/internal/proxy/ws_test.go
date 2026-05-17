@@ -109,7 +109,10 @@ func newTestRig(t *testing.T) *testRig {
 
 func (r *testRig) signup(email, password string) string {
 	r.t.Helper()
-	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	body, _ := json.Marshal(map[string]string{
+		"email": email, "password": password,
+		"username": store.DeriveUsername(email),
+	})
 	resp, err := r.client.Post(r.orchSrv.URL+"/signup", "application/json", bytes.NewReader(body))
 	if err != nil {
 		r.t.Fatalf("signup: %v", err)

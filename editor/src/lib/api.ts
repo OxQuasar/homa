@@ -4,6 +4,7 @@
 export interface MeResponse {
   user_id: string;
   email: string;
+  username: string;
   preview_url: string;
   // Pinned nous session id; forwarded to the sandbox in the WS Hello so
   // every connect attaches to the same session.
@@ -36,8 +37,8 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return JSON.parse(text) as T;
 }
 
-export function signup(email: string, password: string, name?: string) {
-  return call<{ user_id: string }>('POST', '/signup', { email, password, name });
+export function signup(email: string, password: string, username: string, name?: string) {
+  return call<{ user_id: string }>('POST', '/signup', { email, password, username, name });
 }
 
 export function login(email: string, password: string) {

@@ -2,7 +2,8 @@ CREATE TABLE IF NOT EXISTS users (
   id                  TEXT PRIMARY KEY,        -- random short id, e.g. 8 hex chars
   email               TEXT UNIQUE NOT NULL,
   password_hash       TEXT NOT NULL,           -- bcrypt
-  name                TEXT,
+  name                TEXT,                    -- optional, freeform
+  username            TEXT NOT NULL DEFAULT '', -- required at signup; displayed publicly (forum etc); [a-z0-9_]{3,32}
   branch_name         TEXT NOT NULL,           -- "user/<id>"
   worktree_path       TEXT NOT NULL,           -- absolute path on host
   container_name      TEXT NOT NULL,           -- "homa-user-<id>"

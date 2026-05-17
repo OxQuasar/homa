@@ -120,7 +120,7 @@ func decodeBody(t *testing.T, resp *http.Response, v any) {
 func TestSignupHappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	resp := env.post("/signup", map[string]string{
-		"email": "a@b.co", "password": "hunter22", "name": "A",
+		"email": "a@b.co", "password": "hunter22", "name": "A", "username": "alice",
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -212,7 +212,7 @@ func TestSignupBadEmail(t *testing.T) {
 func TestSignupDuplicateEmail(t *testing.T) {
 	env := newTestEnv(t)
 	first := env.post("/signup", map[string]string{
-		"email": "dup@b.co", "password": "hunter22",
+		"email": "dup@b.co", "password": "hunter22", "username": "dup1",
 	})
 	first.Body.Close()
 	if first.StatusCode != http.StatusOK {
@@ -220,7 +220,7 @@ func TestSignupDuplicateEmail(t *testing.T) {
 	}
 
 	second := env.post("/signup", map[string]string{
-		"email": "dup@b.co", "password": "another1",
+		"email": "dup@b.co", "password": "another1", "username": "dup2",
 	})
 	if second.StatusCode != http.StatusConflict {
 		t.Fatalf("second signup: got %d, want 409", second.StatusCode)
@@ -231,7 +231,7 @@ func TestLoginHappyPath(t *testing.T) {
 	env := newTestEnv(t)
 	// First signup
 	resp := env.post("/signup", map[string]string{
-		"email": "li@b.co", "password": "hunter22",
+		"email": "li@b.co", "password": "hunter22", "username": "liuser",
 	})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -259,7 +259,7 @@ func TestLoginHappyPath(t *testing.T) {
 
 func TestLoginWrongPassword(t *testing.T) {
 	env := newTestEnv(t)
-	env.post("/signup", map[string]string{"email": "wp@b.co", "password": "hunter22"}).Body.Close()
+	env.post("/signup", map[string]string{"email": "wp@b.co", "password": "hunter22", "username": "wpuser"}).Body.Close()
 	env.client.Jar, _ = cookiejar.New(nil)
 
 	resp := env.post("/login", map[string]string{"email": "wp@b.co", "password": "wrongone"})
@@ -273,7 +273,7 @@ func TestLoginWrongPassword(t *testing.T) {
 
 func TestMeWithCookie(t *testing.T) {
 	env := newTestEnv(t)
-	signup := env.post("/signup", map[string]string{"email": "me@b.co", "password": "hunter22"})
+	signup := env.post("/signup", map[string]string{"email": "me@b.co", "password": "hunter22", "username": "meuser"})
 	var signupBody struct{ UserID string `json:"user_id"` }
 	decodeBody(t, signup, &signupBody)
 
@@ -319,7 +319,7 @@ func TestMeWithoutCookie(t *testing.T) {
 
 func TestLogoutAndMeAfterLogout(t *testing.T) {
 	env := newTestEnv(t)
-	signup := env.post("/signup", map[string]string{"email": "lo@b.co", "password": "hunter22"})
+	signup := env.post("/signup", map[string]string{"email": "lo@b.co", "password": "hunter22", "username": "louser"})
 	signup.Body.Close()
 
 	// Grab the cookie value before logout (jar will be modified)
@@ -399,7 +399,9 @@ func TestPortAllocationDistinct(t *testing.T) {
 			c, _ := cookiejar.New(nil)
 			client := &http.Client{Jar: c, Timeout: 5 * time.Second}
 			body, _ := json.Marshal(map[string]string{
-				"email": fmt.Sprintf("u%d@b.co", i), "password": "hunter22",
+				"email":    fmt.Sprintf("u%d@b.co", i),
+				"password": "hunter22",
+				"username": fmt.Sprintf("user_%d", i),
 			})
 			req, _ := http.NewRequest(http.MethodPost, env.srv.URL+"/signup", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -510,7 +512,7 @@ func TestSignupDuplicateEmailDoesNotInvokeProvisioner(t *testing.T) {
 	}
 
 	// First signup — happy path; Provision must run.
-	r1 := post(map[string]string{"email": "dup-noprov@x.io", "password": "hunter22"})
+	r1 := post(map[string]string{"email": "dup-noprov@x.io", "password": "hunter22", "username": "dupnp1"})
 	r1.Body.Close()
 	if r1.StatusCode != http.StatusOK {
 		t.Fatalf("first signup: %d", r1.StatusCode)
@@ -522,7 +524,7 @@ func TestSignupDuplicateEmailDoesNotInvokeProvisioner(t *testing.T) {
 	// Drop cookies so the second client doesn't carry over auth — and
 	// retry with the same email.
 	client.Jar, _ = cookiejar.New(nil)
-	r2 := post(map[string]string{"email": "dup-noprov@x.io", "password": "another1"})
+	r2 := post(map[string]string{"email": "dup-noprov@x.io", "password": "another1", "username": "dupnp2"})
 	r2.Body.Close()
 	if r2.StatusCode != http.StatusConflict {
 		t.Fatalf("second signup: got %d, want 409", r2.StatusCode)
@@ -583,7 +585,7 @@ func TestLoginEnsuresSandbox(t *testing.T) {
 	}
 
 	// 1. Signup → Provision=1, EnsureRunning=0
-	r := post("/signup", map[string]string{"email": "le@x.io", "password": "hunter22"})
+	r := post("/signup", map[string]string{"email": "le@x.io", "password": "hunter22", "username": "leuser"})
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("signup: %d", r.StatusCode)
@@ -673,7 +675,7 @@ func TestLoginBumpsActiveBeforeEnsure(t *testing.T) {
 	}
 
 	// Signup.
-	postJSON("/signup", map[string]string{"email": "race@x.io", "password": "hunter22"}).Body.Close()
+	postJSON("/signup", map[string]string{"email": "race@x.io", "password": "hunter22", "username": "racer"}).Body.Close()
 
 	// Capture signup-time last_active_at so we can prove it changed by Ensure entry.
 	pre, err := st.GetUserByEmail(context.Background(), "race@x.io")

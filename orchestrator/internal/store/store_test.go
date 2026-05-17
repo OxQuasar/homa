@@ -32,6 +32,7 @@ func sampleUser(id string) User {
 		Email:            id + "@example.com",
 		PasswordHash:     "$2a$test",
 		Name:             "Test " + id,
+		Username:         "u" + id, // unique per id; satisfies the partial UNIQUE index
 		BranchName:       "user/" + id,
 		WorktreePath:     "/var/homa/branches/" + id,
 		ContainerName:    "homa-user-" + id,
@@ -135,6 +136,90 @@ func TestMigrateBackfillsNousSessionID(t *testing.T) {
 	}
 	if u.NousSessionID != "" {
 		t.Errorf("legacy NousSessionID: got %q, want '' (default after migration)", u.NousSessionID)
+	}
+}
+
+// TestDeriveUsername — pure function. Builds default usernames from
+// email prefixes with the same sanitization rules used at backfill time.
+func TestDeriveUsername(t *testing.T) {
+	cases := []struct {
+		email, want string
+	}{
+		{"alice@example.com", "alice"},
+		{"BoB@x.io", "bob"},                               // lowercase
+		{"a.b.c@x.io", "a_b_c"},                            // dots → _
+		{"_underscore@x.io", "underscore"},                 // strip leading _
+		{"a@x.io", "a__"},                                  // pad to 3
+		{"verylongprefixoflengthovermaxthirtytwo@x.io", "verylongprefixoflengthovermaxthi"}, // 32 cap
+		{"a-b@x.io", "a_b"},                                // hyphen → _
+		{"noaddr", "noaddr"},                               // no @
+	}
+	for _, tc := range cases {
+		t.Run(tc.email, func(t *testing.T) {
+			if got := DeriveUsername(tc.email); got != tc.want {
+				t.Errorf("DeriveUsername(%q): got %q, want %q", tc.email, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMigrateBackfillsUsernames — a v3 DB (post-code-server, pre-username)
+// gets the column added with empty defaults, then the backfill assigns
+// usernames from email prefixes. Two users with the same email-prefix
+// would collide; the test confirms the second one gets disambiguated.
+func TestMigrateBackfillsUsernames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "homa.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE users (
+		id TEXT PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT, name TEXT,
+		branch_name TEXT, worktree_path TEXT, container_name TEXT,
+		nous_port INTEGER, preview_port INTEGER, preview_serve_port INTEGER,
+		nous_session_id TEXT NOT NULL DEFAULT '',
+		created_at INTEGER, last_active_at INTEGER,
+		last_message_at INTEGER NOT NULL DEFAULT 0,
+		code_server_port INTEGER NOT NULL DEFAULT 0,
+		code_server_serve_port INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatalf("create v3 users: %v", err)
+	}
+	for _, row := range []struct {
+		id, email string
+		created   int64
+	}{
+		{"aaaaaaaa", "alice@x.io", 100},
+		{"bbbbbbbb", "alice@y.io", 200}, // same prefix, later created_at
+	} {
+		_, err := db.Exec(`INSERT INTO users
+			(id, email, password_hash, name, branch_name, worktree_path,
+			 container_name, nous_port, preview_port, preview_serve_port,
+			 nous_session_id, created_at, last_active_at)
+			VALUES (?, ?, '$2a','x','u/x','/wt','c',0,0,0,'sx',?,?)`,
+			row.id, row.email, row.created, row.created)
+		if err != nil {
+			t.Fatalf("insert %s: %v", row.id, err)
+		}
+	}
+	db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v3: %v", err)
+	}
+	defer st.Close()
+
+	a, _ := st.GetUserByID(context.Background(), "aaaaaaaa")
+	b, _ := st.GetUserByID(context.Background(), "bbbbbbbb")
+	if a.Username != "alice" {
+		t.Errorf("older user: got username %q, want alice", a.Username)
+	}
+	if b.Username == "alice" {
+		t.Errorf("collision not resolved: second user also got 'alice'")
+	}
+	if b.Username == "" {
+		t.Errorf("second user: empty username (backfill missed)")
 	}
 }
 
