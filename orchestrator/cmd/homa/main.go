@@ -60,6 +60,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "list":
+			if err := runList(os.Args[2:], log); err != nil {
+				log.Error("list failed", "err", err)
+				os.Exit(1)
+			}
+			return
 		case "-h", "--help", "help":
 			fmt.Fprint(os.Stderr, usageText)
 			return
@@ -78,6 +84,7 @@ func main() {
 const usageText = `usage:
   homa [-config PATH]            run the orchestrator (default)
   homa merge <userid>            git-merge user/<userid> → main in site-template/
+  homa list                      print all users as 'email | userid' (sorted by created_at)
 `
 
 func run(configPath string, log *slog.Logger) error {
@@ -442,6 +449,46 @@ func runMerge(args []string, log *slog.Logger) error {
 		return fmt.Errorf("git merge: %w (resolve conflicts in %s then retry)", err, siteDir)
 	}
 	log.Info("merge: success — mainsite vite will HMR to the new files")
+	return nil
+}
+
+// runList implements `homa list`: prints every user as
+//   <email> | <userid>
+// to stdout, one per line, sorted by created_at (oldest first — matches
+// signup order). Header line is skipped so output is greppable / pipeable.
+//
+// Output goes to stdout; the orchestrator's slog logs to stderr, so a
+// `homa list | head -1` works cleanly even with logs enabled.
+//
+// Read-only — does not start the orchestrator or touch container state.
+func runList(args []string, log *slog.Logger) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: homa list (takes no arguments)")
+	}
+	cfg, err := config.Load("config.json")
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+	users, err := st.ListUsers(context.Background())
+	if err != nil {
+		return fmt.Errorf("list users: %w", err)
+	}
+	// ListUsers returns the lifecycle projection (no email); fetch each
+	// row's full record. n is small (single-operator deployments), so
+	// the per-row query is fine; not worth a custom email-only query.
+	for _, summary := range users {
+		u, err := st.GetUserByID(context.Background(), summary.ID)
+		if err != nil {
+			log.Warn("list: user lookup failed", "user_id", summary.ID, "err", err)
+			continue
+		}
+		fmt.Printf("%s | %s\n", u.Email, u.ID)
+	}
 	return nil
 }
 
