@@ -300,11 +300,15 @@
     document.addEventListener('visibilitychange', onVisibilityChange);
   });
 
-  // Persist tabs + active tab on every change. $effect runs after the
-  // initial mount restore (which happens INSIDE onMount), so the
-  // restore-then-immediately-save pattern is safe: the saved blob
-  // is just rewritten with the same content.
-  $effect(() => {
+  // Persist tabs + active tab. We DON'T use $effect here because Svelte
+  // 5's effect first-run fires between mount and onMount's async restore
+  // (specifically, after the first `await` in onMount, before the
+  // restore code further down). That initial run would write the
+  // EMPTY default state to localStorage BEFORE restore could read it
+  // back, clobbering the saved blob. Explicit persistTabs() calls at
+  // every mutation site are timing-safe — they only fire after a
+  // genuine state change, never during mount.
+  function persistTabs() {
     if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(DM_TABS_STORAGE_KEY, JSON.stringify(dmTabs));
@@ -312,7 +316,7 @@
     } catch {
       /* private-mode / quota — silently no-op, ephemeral fallback */
     }
-  });
+  }
 
   onDestroy(() => {
     window.removeEventListener('message', onIframeMessage);
@@ -388,9 +392,10 @@
   }
 
   // Switch active tab. Clears any per-thread polling timer and (if
-  // moving to a DM tab) installs a new one.
+  // moving to a DM tab) installs a new one. Persists to localStorage.
   function selectTab(t: ActiveTab) {
     activeTab = t;
+    persistTabs();
     if (activeThreadTimer) {
       clearInterval(activeThreadTimer);
       activeThreadTimer = null;
@@ -403,7 +408,7 @@
 
   function openDm(peerId: string, username: string) {
     dmTabs = openTab(dmTabs, { peerId, username });
-    selectTab({ kind: 'dm', peerId });
+    selectTab({ kind: 'dm', peerId }); // selectTab persists
   }
 
   // Close a DM tab. If it was active, fall back to AI. Also evicts
@@ -416,7 +421,10 @@
     const { ['dm:' + peerId]: _draftGone, ...restDrafts } = drafts;
     drafts = restDrafts;
     if (activeTab.kind === 'dm' && activeTab.peerId === peerId) {
-      selectTab({ kind: 'ai' });
+      selectTab({ kind: 'ai' }); // selectTab persists
+    } else {
+      // Active tab unchanged, but dmTabs did — explicitly persist.
+      persistTabs();
     }
   }
 
