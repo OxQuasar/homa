@@ -3,8 +3,11 @@
   import { codeURL, me, logout } from '../lib/api';
   import { openSession, type Session } from '../lib/ws';
   import type {
+    ActiveTab,
     BufferedError,
     ChatMessage,
+    DmConversation,
+    DmTab,
     Event as NousEvent,
     Streaming,
     ToolCall
@@ -16,7 +19,19 @@
     originOf,
     parseBeaconMessage
   } from '../lib/iframe_errors';
+  import {
+    closeTab,
+    dmsToChatMessages,
+    fetchConversations,
+    fetchThread,
+    fetchUnreadCount,
+    openTab,
+    otherUnread,
+    sendDm
+  } from '../lib/dm';
   import Chat from '../lib/Chat.svelte';
+  import MessagesTabs from '../lib/MessagesTabs.svelte';
+  import MessagesPicker from '../lib/MessagesPicker.svelte';
 
   // Spec: §11 state shape.
   const session = $state({
@@ -69,6 +84,47 @@
   // can self-correct. Cleared on send.
   let errorBuffer = $state<BufferedError[]>([]);
   let errorsExpanded = $state(false);
+
+  // --- Direct messaging state ----------------------------------------
+  //
+  // Tab strip at the top of the chat pane. activeTab determines whose
+  // messages render + where Send routes. AI is always present.
+  // DM tabs are ephemeral (lost on reload — by design); reopen via the
+  // picker which lists contacted users + lets you search all users.
+
+  let activeTab = $state<ActiveTab>({ kind: 'ai' });
+  let dmTabs = $state<DmTab[]>([]);
+  let dmThreads = $state<Record<string, ChatMessage[]>>({});
+  // Per-peer unread count, refreshed from /api/messages/conversations.
+  let dmUnread = $state<Record<string, number>>({});
+  // Conversations list (from poll); drives picker + aggregates unread.
+  let dmConversations = $state<DmConversation[]>([]);
+  let dmAllUsers = $state<{ user_id: string; username: string; created_at: number }[]>([]);
+  let pickerOpen = $state(false);
+  let selfUserId = $state('');
+  // Total unread across peers that DON'T have an open tab — drives the
+  // "+ N" picker badge.
+  const pickerBadge = $derived(otherUnread(dmConversations, dmTabs));
+  // Active tab's message list (for rendering by Chat.svelte). AI →
+  // session.messages; DM → that thread's hydrated messages.
+  const activeMessages = $derived.by<ChatMessage[]>(() => {
+    if (activeTab.kind === 'ai') return session.messages;
+    return dmThreads[activeTab.peerId] ?? [];
+  });
+  // Active tab's streaming bubble — only AI has live streaming. DM has
+  // no streaming surface; messages just appear when poll picks them up.
+  const activeStreaming = $derived<Streaming | null>(
+    activeTab.kind === 'ai' ? session.streaming : null
+  );
+  // status (Send/Stop button) — only AI has a running concept. DM Send
+  // is fire-and-forget HTTP; the Input button stays "Send" throughout.
+  const activeStatus = $derived<'idle' | 'running'>(
+    activeTab.kind === 'ai' ? session.status : 'idle'
+  );
+
+  // Polling timers — cleared on unmount.
+  let unreadTimer: ReturnType<typeof setInterval> | null = null;
+  let activeThreadTimer: ReturnType<typeof setInterval> | null = null;
 
   // Formatters for the header pill. "12.3k" rather than 12345 so it
   // stays compact across orders of magnitude.
@@ -163,6 +219,7 @@
     try {
       const m = await me();
       userEmail = m.email;
+      selfUserId = m.user_id || '';
       session.previewUrl = m.preview_url || '';
       sessionId = m.nous_session_id || '';
     } catch (err) {
@@ -199,12 +256,98 @@
     // the origin allowlist (only messages from session.previewUrl's
     // origin land in the buffer) + payload shape validation.
     window.addEventListener('message', onIframeMessage);
+
+    // DM polling: refresh conversations + unread on a slow cadence (15s)
+    // for cross-tab/cross-peer signaling. Fire once immediately so the
+    // picker badge populates without waiting a full interval.
+    void refreshConversations();
+    unreadTimer = setInterval(refreshConversations, UNREAD_INTERVAL_MS);
   });
 
   onDestroy(() => {
     window.removeEventListener('message', onIframeMessage);
+    if (unreadTimer) clearInterval(unreadTimer);
+    if (activeThreadTimer) clearInterval(activeThreadTimer);
     ws?.close();
   });
+
+  const UNREAD_INTERVAL_MS = 15_000;
+  const ACTIVE_THREAD_INTERVAL_MS = 3_000;
+
+  // --- DM lifecycle helpers ------------------------------------------
+
+  async function refreshConversations() {
+    try {
+      const convos = await fetchConversations();
+      dmConversations = convos;
+      // Build per-peer unread map from the list. Picker badge uses the
+      // full list; per-tab badge uses this map.
+      const next: Record<string, number> = {};
+      for (const c of convos) next[c.peer_id] = c.unread_count;
+      dmUnread = next;
+      // Lazy-load the "all users" list the first time the user opens
+      // the picker, not on every refresh; cached for the session.
+    } catch (e) {
+      // Soft-fail: DMs are a non-critical feature, log and continue.
+      console.warn('refreshConversations:', e);
+    }
+  }
+
+  async function refreshActiveThread() {
+    if (activeTab.kind !== 'dm') return;
+    const peerId = activeTab.peerId;
+    try {
+      const msgs = await fetchThread(peerId);
+      dmThreads = { ...dmThreads, [peerId]: dmsToChatMessages(msgs, selfUserId) };
+      // Thread fetch marks-read server-side; refresh conversations to
+      // reflect that in the per-peer unread map + picker badge.
+      void refreshConversations();
+    } catch (e) {
+      console.warn('refreshActiveThread:', e);
+    }
+  }
+
+  // Switch active tab. Clears any per-thread polling timer and (if
+  // moving to a DM tab) installs a new one.
+  function selectTab(t: ActiveTab) {
+    activeTab = t;
+    if (activeThreadTimer) {
+      clearInterval(activeThreadTimer);
+      activeThreadTimer = null;
+    }
+    if (t.kind === 'dm') {
+      void refreshActiveThread();
+      activeThreadTimer = setInterval(refreshActiveThread, ACTIVE_THREAD_INTERVAL_MS);
+    }
+  }
+
+  // Open (or focus) a DM tab. peerId + username are passed in by the
+  // picker; tab open-state lives entirely in the editor.
+  function openDm(peerId: string, username: string) {
+    dmTabs = openTab(dmTabs, { peerId, username });
+    selectTab({ kind: 'dm', peerId });
+  }
+
+  // Close a DM tab. If it was active, fall back to AI.
+  function closeDm(peerId: string) {
+    dmTabs = closeTab(dmTabs, peerId);
+    if (activeTab.kind === 'dm' && activeTab.peerId === peerId) {
+      selectTab({ kind: 'ai' });
+    }
+  }
+
+  // Picker open: lazy-fetch the full users list if we haven't yet.
+  async function openPicker() {
+    if (dmAllUsers.length === 0) {
+      try {
+        const r = await fetch('/api/users', { credentials: 'include' });
+        if (r.ok) dmAllUsers = await r.json();
+      } catch (e) {
+        console.warn('fetch users:', e);
+      }
+    }
+    pickerOpen = true;
+  }
 
   function onIframeMessage(e: MessageEvent) {
     const allowed = originOf(session.previewUrl);
@@ -300,9 +443,15 @@
   }
 
   function onSend(text: string) {
-    // Prepend any buffered iframe errors so the LLM sees the same
-    // failure context the user does. The augmented string is also what
-    // we push to chat history — transparency over hidden context.
+    // Routing: AI tab → nous WS; DM tab → POST /api/messages/with/<peer>.
+    if (activeTab.kind === 'dm') {
+      void sendActiveDm(text);
+      return;
+    }
+
+    // AI path (unchanged): prepend buffered iframe errors so the LLM
+    // sees the same failure context the user does. Augmented string
+    // also pushed to chat history — transparency over hidden context.
     const prompt = augmentPrompt(text, errorBuffer);
     errorBuffer = [];
     errorsExpanded = false;
@@ -315,6 +464,41 @@
     // the user idle for some reason, it'll re-set.
     idleWarningSeconds = null;
     ws?.send({ type: 'run', prompt });
+  }
+
+  // sendActiveDm posts to /api/messages/with/<peer> + optimistically
+  // appends to the local thread so the UI feels instant. The next poll
+  // tick will return the authoritative version (with server-assigned
+  // id + canonical timestamp); replacing is fine since the thread is
+  // re-rendered wholesale on poll.
+  async function sendActiveDm(text: string) {
+    if (activeTab.kind !== 'dm') return;
+    const peerId = activeTab.peerId;
+    const optimistic: ChatMessage = {
+      role: 'user',
+      text,
+      createdAt: Date.now(),
+      displayLabel: 'you'
+    };
+    dmThreads = {
+      ...dmThreads,
+      [peerId]: [...(dmThreads[peerId] ?? []), optimistic]
+    };
+    try {
+      await sendDm(peerId, text);
+      // Pull authoritative thread so any race with peer reply also
+      // surfaces; optimistic message will be replaced with the canonical.
+      void refreshActiveThread();
+    } catch (e) {
+      console.warn('sendDm:', e);
+      // Mark the optimistic message as failed (cheap signal: prefix with ⚠)
+      const arr = dmThreads[peerId] ?? [];
+      const last = arr[arr.length - 1];
+      if (last) {
+        const updated = [...arr.slice(0, -1), { ...last, text: '⚠ send failed — ' + last.text }];
+        dmThreads = { ...dmThreads, [peerId]: updated };
+      }
+    }
   }
 
   // Stop the in-flight run. nous handles cancellation and emits the
@@ -386,6 +570,27 @@
     class:chat-collapsed={chatCollapsed}
   >
     <section class="chat-pane">
+      <div class="tabs-wrap">
+        <MessagesTabs
+          tabs={dmTabs}
+          active={activeTab}
+          aiHasNew={false}
+          {dmUnread}
+          {pickerBadge}
+          onSelect={selectTab}
+          onCloseDm={closeDm}
+          onPickerOpen={openPicker}
+        />
+        {#if pickerOpen}
+          <MessagesPicker
+            conversations={dmConversations}
+            allUsers={dmAllUsers}
+            {selfUserId}
+            onPick={openDm}
+            onClose={() => (pickerOpen = false)}
+          />
+        {/if}
+      </div>
       {#if errorBuffer.length > 0}
         <!--
           Browser-error badge. Click toggles the expanded list; ✕ clears
@@ -425,9 +630,9 @@
         </div>
       {/if}
       <Chat
-        messages={session.messages}
-        streaming={session.streaming}
-        status={session.status}
+        messages={activeMessages}
+        streaming={activeStreaming}
+        status={activeStatus}
         {onSend}
         {onStop}
       />
@@ -556,6 +761,9 @@
     min-height: 0; min-width: 0;
     overflow: hidden;
   }
+  /* tabs-wrap is position:relative so the picker (position:absolute)
+     anchors to it. */
+  .tabs-wrap { position: relative; }
   /* When collapsed, the splitter grid track stays a thin strip — wider
      than the resize-handle case so the > toggle button is comfortably
      clickable. */

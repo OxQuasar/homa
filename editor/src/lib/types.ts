@@ -155,6 +155,41 @@ export interface ChatMessage {
   // from history. `output` is filled in when the matching tool_result is
   // seen (later in the same or a following message).
   tools?: ToolCall[];
+  // Optional override for the role label rendered in Message.svelte's
+  // header. Used by DM rendering to show the sender's username instead
+  // of "user"/"assistant".
+  displayLabel?: string;
+}
+
+// --- Direct messages (cross-user) -------------------------------------
+
+// DmMessage is the wire shape returned by /api/messages/with/<peer>.
+// Mirror of internal/messages.Message on the Go side.
+export interface DmMessage {
+  id: number;
+  sender_id: string;
+  sender_username: string;
+  content: string;
+  created_at: number; // unix seconds (multiply by 1000 for Date)
+}
+
+// DmConversation is the wire shape returned by /api/messages/conversations.
+export interface DmConversation {
+  peer_id: string;
+  peer_username: string;
+  last_at: number;        // unix seconds
+  last_preview: string;
+  unread_count: number;
+}
+
+// ActiveTab — what the chat pane is currently showing. Discriminated
+// union so the renderer can switch behavior cleanly.
+export type ActiveTab = { kind: 'ai' } | { kind: 'dm'; peerId: string };
+
+// DmTab — the per-peer tab record stored in the editor's open-tabs list.
+export interface DmTab {
+  peerId: string;
+  username: string;
 }
 
 export interface ToolCall {

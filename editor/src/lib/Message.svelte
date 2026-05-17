@@ -13,7 +13,7 @@
 
 <div class="msg msg-{message.role}">
   <div class="header">
-    <span class="role">{message.role}</span>
+    <span class="role">{message.displayLabel ?? message.role}</span>
     {#if ts}
       <time class="ts" title={tsISO}>{ts}</time>
     {/if}
