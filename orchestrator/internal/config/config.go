@@ -212,12 +212,21 @@ type Config struct {
 // fully-defaulted config.
 func Load(path string) (*Config, error) {
 	cfg := &Config{}
+	var configDir string
 	if path != "" {
 		data, err := os.ReadFile(path)
 		switch {
 		case err == nil:
 			if err := json.Unmarshal(data, cfg); err != nil {
 				return nil, fmt.Errorf("parsing %s: %w", path, err)
+			}
+			// Capture the config file's directory so relative paths inside
+			// the config + the defaults applied below resolve against IT,
+			// not the caller's CWD. Lets `homa list` / `merge` / etc. work
+			// from any directory (with HOMA_CONFIG=/abs/path/config.json)
+			// instead of requiring `cd ~/homa` first.
+			if abs, aerr := filepath.Abs(path); aerr == nil {
+				configDir = filepath.Dir(abs)
 			}
 		case os.IsNotExist(err):
 			// fall through to defaults
@@ -226,7 +235,31 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	applyDefaults(cfg)
+	if configDir != "" {
+		resolveRelativePaths(cfg, configDir)
+	}
 	return cfg, nil
+}
+
+// resolveRelativePaths makes the directory-typed fields in cfg
+// absolute relative to base. Already-absolute paths are untouched.
+// Keeps the orchestrator's WorkingDirectory=%h/homa systemd setup
+// working unchanged (paths starting relative end up the same as
+// before — main.go cd's into the dir effectively), while letting
+// CLI subcommands invoke `homa` from anywhere.
+func resolveRelativePaths(cfg *Config, base string) {
+	for _, p := range []*string{
+		&cfg.DataDir,
+		&cfg.BranchesDir,
+		&cfg.SiteTemplateDir,
+		&cfg.UserConfigsDir,
+		&cfg.NousConfigTemplate,
+		&cfg.CodeServerSecretPath,
+	} {
+		if *p != "" && !filepath.IsAbs(*p) {
+			*p = filepath.Join(base, *p)
+		}
+	}
 }
 
 func applyDefaults(cfg *Config) {

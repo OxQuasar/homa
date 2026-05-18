@@ -88,7 +88,7 @@ func main() {
 		}
 	}
 
-	configPath := flag.String("config", "config.json", "path to homa orchestrator config")
+	configPath := flag.String("config", defaultConfigPath(), "path to homa orchestrator config (or set HOMA_CONFIG)")
 	flag.Parse()
 
 	if err := run(*configPath, log); err != nil {
@@ -437,7 +437,7 @@ func runMerge(args []string, log *slog.Logger) error {
 		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
 	}
 
-	cfg, err := config.Load("config.json")
+	cfg, err := config.Load(defaultConfigPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -499,7 +499,7 @@ func runList(args []string, log *slog.Logger) error {
 	if len(args) > 0 {
 		return fmt.Errorf("usage: homa list (takes no arguments)")
 	}
-	cfg, err := config.Load("config.json")
+	cfg, err := config.Load(defaultConfigPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -543,7 +543,7 @@ func runReview(args []string, log *slog.Logger) error {
 	if !userIDPattern.MatchString(userID) {
 		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
 	}
-	cfg, err := config.Load("config.json")
+	cfg, err := config.Load(defaultConfigPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -600,7 +600,7 @@ func runReload(args []string, log *slog.Logger) error {
 	if !userIDPattern.MatchString(userID) {
 		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
 	}
-	cfg, err := config.Load("config.json")
+	cfg, err := config.Load(defaultConfigPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -733,4 +733,20 @@ func backfillCodeServerPorts(ctx context.Context, st *store.Store, ports *provis
 			"updated", updated)
 	}
 	return nil
+}
+
+// defaultConfigPath returns the default config.json path used by every
+// subcommand + the `-config` flag. Resolution order:
+//   1. HOMA_CONFIG env var (absolute path, lets the CLI work from any cwd)
+//   2. "config.json" relative to CWD (the original behavior; works when
+//      run from ~/homa/ but not from anywhere else)
+//
+// Symlinked invocation (e.g. ~/.local/bin/homa → ~/homa/homa) needs (1)
+// because the working directory is wherever the user typed the command,
+// not the directory where the binary lives.
+func defaultConfigPath() string {
+	if p := os.Getenv("HOMA_CONFIG"); p != "" {
+		return p
+	}
+	return "config.json"
 }

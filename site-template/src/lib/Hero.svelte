@@ -11,6 +11,12 @@
     titleY?: string;
     /** Apply a bluer/darker scrim to fake nighttime mood on a daytime photo. */
     nightTint?: boolean;
+    /** 'cover' fills the viewport (may crop); 'contain' shows the whole image (may letterbox). */
+    fit?: 'cover' | 'contain';
+    /** Focal point for cropping under object-fit: cover. Default '50% 50%'. */
+    objectPosition?: string;
+    /** Flat black overlay opacity (0–1). 0 = none, 0.5 = halve image brightness. */
+    dim?: number;
   }
 
   let {
@@ -22,12 +28,18 @@
     ctaY = '50%',
     titleY = '50%',
     nightTint = false,
+    fit = 'cover',
+    objectPosition = '50% 50%',
+    dim = 0,
   }: Props = $props();
 </script>
 
 <section class="hero">
-  <img class="bg" src={image} {alt} />
+  <img class="bg" src={image} {alt} style="object-fit: {fit}; object-position: {objectPosition}" />
   <div class="scrim" class:night={nightTint}></div>
+  {#if dim > 0}
+    <div class="dim" style="background: rgba(0,0,0,{dim})"></div>
+  {/if}
   {#if title}
     <h1 style="top: {titleY}">{title}</h1>
   {/if}
@@ -58,7 +70,6 @@
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: cover;
     z-index: -2;
   }
 
@@ -69,6 +80,13 @@
     background:
       radial-gradient(ellipse at 50% 60%, rgba(0,0,0,0.55), rgba(0,0,0,0) 60%),
       linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 100%);
+  }
+
+  .dim {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
   }
 
   .scrim.night {

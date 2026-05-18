@@ -17,7 +17,8 @@ import (
 // JSON tag wiring is exercised too — an accidentally renamed JSON key
 // would surface as a "still got zero" failure in the matching field.
 func TestLoadEmptyAppliesAllDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write empty config: %v", err)
 	}
@@ -26,11 +27,9 @@ func TestLoadEmptyAppliesAllDefaults(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	// Identifiers (paths / binary names / image refs).
+	// Identifiers (binary names / image refs / network strings) —
+	// not paths, so resolveRelativePaths leaves them alone.
 	checkString(t, "ListenAddr", cfg.ListenAddr, defaultListenAddr)
-	checkString(t, "DataDir", cfg.DataDir, defaultDataDir)
-	checkString(t, "BranchesDir", cfg.BranchesDir, defaultBranchesDir)
-	checkString(t, "SiteTemplateDir", cfg.SiteTemplateDir, defaultSiteTemplateDir)
 	checkString(t, "ImageRef", cfg.ImageRef, defaultImageRef)
 	checkString(t, "PodmanBin", cfg.PodmanBin, defaultPodmanBin)
 	checkString(t, "TailscaleBin", cfg.TailscaleBin, defaultTailscaleBin)
@@ -38,24 +37,27 @@ func TestLoadEmptyAppliesAllDefaults(t *testing.T) {
 	checkString(t, "ContainerMemory", cfg.ContainerMemory, defaultContainerMemory)
 	checkString(t, "ContainerCPUs", cfg.ContainerCPUs, defaultContainerCPUs)
 
+	// Directory defaults — now resolved relative to the config file's
+	// directory (so subcommands work from any cwd). The default VALUES
+	// are still defaultDataDir / etc., joined against dir.
+	checkString(t, "DataDir", cfg.DataDir, filepath.Join(dir, defaultDataDir))
+	checkString(t, "BranchesDir", cfg.BranchesDir, filepath.Join(dir, defaultBranchesDir))
+	checkString(t, "SiteTemplateDir", cfg.SiteTemplateDir, filepath.Join(dir, defaultSiteTemplateDir))
+
 	// Readiness probe.
 	checkInt(t, "ReadinessTimeoutSec", cfg.ReadinessTimeoutSec, defaultReadinessTimeoutSec)
 	checkInt(t, "ReadinessIntervalMS", cfg.ReadinessIntervalMS, defaultReadinessIntervalMS)
 
-	// Lifecycle defaults — the values backing the compact-then-stop story.
-	// Changing these affects user-visible behavior; the test pins the
-	// numbers so a silent regression in applyDefaults gets caught.
+	// Lifecycle defaults — pins the user-visible numbers.
 	checkInt(t, "IdleAfterMinutes", cfg.IdleAfterMinutes, defaultIdleAfterMinutes)
 	checkInt(t, "GCIntervalSeconds", cfg.GCIntervalSeconds, defaultGCIntervalSeconds)
 	checkInt(t, "IdleWarningSeconds", cfg.IdleWarningSeconds, defaultIdleWarningSeconds)
 	checkInt(t, "CompactTimeoutSeconds", cfg.CompactTimeoutSeconds, defaultCompactTimeoutSeconds)
 	checkInt64(t, "CompactMinTokens", cfg.CompactMinTokens, defaultCompactMinTokens)
 
-	// User configs path defaults to <DataDir>/configs/, and the template
-	// path is shipped relative to sandbox/.
-	wantConfigs := filepath.Join(defaultDataDir, "configs")
-	checkString(t, "UserConfigsDir", cfg.UserConfigsDir, wantConfigs)
-	checkString(t, "NousConfigTemplate", cfg.NousConfigTemplate, defaultNousConfigTemplate)
+	// UserConfigsDir + NousConfigTemplate also resolved against config dir.
+	checkString(t, "UserConfigsDir", cfg.UserConfigsDir, filepath.Join(dir, defaultDataDir, "configs"))
+	checkString(t, "NousConfigTemplate", cfg.NousConfigTemplate, filepath.Join(dir, defaultNousConfigTemplate))
 
 	// Mainsite port — separate from user pool.
 	checkInt(t, "MainSiteHostPort", cfg.MainSiteHostPort, defaultMainSiteHostPort)
@@ -75,6 +77,34 @@ func TestLoadEmptyAppliesAllDefaults(t *testing.T) {
 		t.Error("MainSiteEnabled: got nil (default not applied)")
 	} else if *cfg.MainSiteEnabled != false {
 		t.Errorf("MainSiteEnabled default with UsePodman=false: got true, want false")
+	}
+}
+
+// TestRelativePathsResolvedToConfigDir — explicit assertion that
+// directory-typed fields with relative values resolve against the
+// config FILE's directory, not the caller's CWD. Lets `homa list` /
+// `merge` / etc. work from any directory (via HOMA_CONFIG=/abs/path).
+func TestRelativePathsResolvedToConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	body := `{"data_dir": "mydata", "branches_dir": "user-trees", "site_template_dir": "/abs/path/site"}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Relative entries → joined against dir.
+	if cfg.DataDir != filepath.Join(dir, "mydata") {
+		t.Errorf("DataDir: got %q", cfg.DataDir)
+	}
+	if cfg.BranchesDir != filepath.Join(dir, "user-trees") {
+		t.Errorf("BranchesDir: got %q", cfg.BranchesDir)
+	}
+	// Absolute entries → preserved unchanged.
+	if cfg.SiteTemplateDir != "/abs/path/site" {
+		t.Errorf("SiteTemplateDir (absolute): got %q", cfg.SiteTemplateDir)
 	}
 }
 
