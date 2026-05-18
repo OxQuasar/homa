@@ -7,6 +7,8 @@
   <meta name="description" content="A moonlit courtyard within the White Tower." />
 </svelte:head>
 
+<a class="back-link" href="/" aria-label="Back to the White Tower">← Back</a>
+
 <a class="side-link left" href="/library">Library</a>
 <a class="side-link right" href="/forum">Forum</a>
 
@@ -17,6 +19,28 @@
 />
 
 <style>
+  .back-link {
+    position: fixed;
+    top: 1.25rem;
+    left: 1.5rem;
+    z-index: 10;
+    padding: 0.45rem 1.1rem;
+    border-radius: 999px;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    color: #f5f1e6;
+    text-decoration: none;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(245, 241, 230, 0.45);
+    backdrop-filter: blur(6px);
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+  .back-link:hover {
+    background: rgba(0, 0, 0, 0.45);
+    border-color: rgba(245, 241, 230, 0.85);
+  }
+
   .side-link {
     position: fixed;
     top: 50%;

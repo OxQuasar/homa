@@ -1,5 +1,13 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import Hero from '$lib/Hero.svelte';
+  import GuardEncounter from '$lib/GuardEncounter.svelte';
+
+  let started = $state(false);
+
+  const intro =
+    'Welcome to the White Tower. Here is learning and building. ' +
+    'You may choose to visit our grounds and library. Will you enter?';
 </script>
 
 <svelte:head>
@@ -19,11 +27,16 @@
   alt="The White Tower"
   title="The White Tower"
   titleY="22%"
-  ctaHref="/enter"
-  ctaLabel="Enter"
+  ctaLabel="Knock"
   ctaY="68%"
+  onCta={() => (started = true)}
+  ctaHidden={started}
   nightTint
 />
+
+{#if started}
+  <GuardEncounter text={intro} onDone={() => goto('/enter')} />
+{/if}
 
 <style>
   .login-link {

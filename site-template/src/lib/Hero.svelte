@@ -5,6 +5,10 @@
     title?: string;
     ctaHref?: string;
     ctaLabel?: string;
+    /** If provided, CTA renders as a <button> calling this handler instead of an <a>. */
+    onCta?: () => void;
+    /** Fade out the CTA (used when an overlay takes over the interaction). */
+    ctaHidden?: boolean;
     /** Vertical position of the CTA button as CSS top value. Default 50% (centered). */
     ctaY?: string;
     /** Vertical position of the title as CSS top value. Default 50% (centered). */
@@ -25,6 +29,8 @@
     title,
     ctaHref,
     ctaLabel,
+    onCta,
+    ctaHidden = false,
     ctaY = '50%',
     titleY = '50%',
     nightTint = false,
@@ -43,8 +49,22 @@
   {#if title}
     <h1 style="top: {titleY}">{title}</h1>
   {/if}
-  {#if ctaHref && ctaLabel}
-    <a class="btn" href={ctaHref} style="top: {ctaY}">{ctaLabel}</a>
+  {#if ctaLabel}
+    {#if onCta}
+      <button
+        class="btn"
+        class:hidden={ctaHidden}
+        style="top: {ctaY}"
+        onclick={onCta}
+      >{ctaLabel}</button>
+    {:else if ctaHref}
+      <a
+        class="btn"
+        class:hidden={ctaHidden}
+        href={ctaHref}
+        style="top: {ctaY}"
+      >{ctaLabel}</a>
+    {/if}
   {/if}
 </section>
 
@@ -125,11 +145,17 @@
     color: #0b1430;
     border: 1px solid #f5f1e6;
     box-shadow: 0 8px 30px rgba(0,0,0,0.5);
-    transition: transform 0.15s ease, background 0.2s ease;
+    cursor: pointer;
+    transition: transform 0.15s ease, background 0.2s ease, opacity 0.4s ease;
   }
 
   .btn:hover {
     transform: translate(-50%, -50%) translateY(-1px);
     background: #fff;
+  }
+
+  .btn.hidden {
+    opacity: 0;
+    pointer-events: none;
   }
 </style>

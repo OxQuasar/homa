@@ -77,6 +77,12 @@ Orchestrator restart does NOT restart sandbox containers — they're managed ind
 
 ## Promote a user's edits to public
 
+Two paths: **direct merge** (whole user branch) or **PR merge** (staged
+work on a `pr/<userid>/<topic>` branch — for when you want review
+separation per topic instead of merging everything-since-last-publish).
+
+### Direct merge
+
 ```bash
 ./homa merge <userid>
 ```
@@ -84,6 +90,36 @@ Orchestrator restart does NOT restart sandbox containers — they're managed ind
 Auto-commits everything in `branches/<userid>/` (uncommitted LLM edits + new files) under the user's email, then `git merge --no-ff user/<userid>` into `main`. `homa-main`'s vite HMRs; visitors see new content within ~2s.
 
 Conflicts surface as a non-zero git exit. Resolve by hand in `~/homa/site-template/` and `git commit`. Retry the merge command — auto-commit is idempotent on a clean tree.
+
+### PR-style merge
+
+LLM (or user) creates a `pr/<userid>/<topic>` branch from their work:
+
+```bash
+# inside the user's sandbox (LLM via bash):
+cd /workspace
+git checkout -b pr/77b4cf0e/dark-mode    # off user/77b4cf0e
+# ... commits ...
+git checkout user/77b4cf0e               # back to user branch
+```
+
+Operator review + merge from host:
+
+```bash
+homa pr list                              # see all pr/* branches with stats
+homa pr show pr/77b4cf0e/dark-mode        # commits + file changes vs main
+homa pr merge pr/77b4cf0e/dark-mode       # git merge --no-ff into main
+# or
+homa pr close pr/77b4cf0e/dark-mode       # delete without merging
+```
+
+Branch naming `pr/<userid>/<topic>` is the convention; anything else is
+not picked up by `homa pr list`. Topic charset: `[a-zA-Z0-9._-]+` (URL-safe,
+no slashes — nested topics aren't supported in v1).
+
+Phase 1 is purely git-native (no metadata DB). Phase 2 (later) adds a
+`pull_requests` table for titles, descriptions, comments, and a UI
+surface in the editor.
 
 ## Edit a user's nous config
 
