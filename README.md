@@ -51,6 +51,21 @@ Catch-all `GET /` falls back to the SPA login page if the mainsite container is 
 
 All admin tasks are filesystem / shell on the host. There's no admin HTTP UI — this is single-operator by design.
 
+### `homa` CLI from anywhere
+
+The `homa` binary loads `config.json` from CWD by default. To run subcommands (`list`, `merge`, `review`, `reload`) from any directory (e.g. via `~/.local/bin/homa` symlink), export the config path:
+
+```bash
+echo 'export HOMA_CONFIG=$HOME/homa/config.json' >> ~/.bashrc
+source ~/.bashrc
+
+# Then from anywhere:
+homa list
+homa merge <userid>
+```
+
+`HOMA_CONFIG` may point anywhere — paths *inside* the config (`data_dir`, `branches_dir`, `site_template_dir`, etc.) are resolved relative to the config file's directory, not your CWD.
+
 ### Merge a user's branch into `main`
 
 User branches accumulate edits independently. To promote a contributor's work into the public site:
