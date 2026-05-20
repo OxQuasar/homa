@@ -113,7 +113,7 @@ const usageText = `usage:
   homa reload <userid>           stop user's container — next login respawns with current config
 
   homa pr list                   list all pr/<userid>/<topic> branches with stats vs main
-  homa pr show <branch>          diff + commits for a PR branch
+  homa pr show [<branch>]        diff + commits for a PR branch (no arg = single open PR)
   homa pr merge <branch>         git-merge a PR branch into main (same flow as 'homa merge')
   homa pr close <branch>         delete a PR branch without merging
 `
@@ -825,9 +825,33 @@ func runPRList(args []string, log *slog.Logger) error {
 }
 
 // runPRShow prints the diff + commit list for a PR branch.
+//
+// With no args: do-what-I-mean dispatch based on PR count:
+//   0  → "(no PR branches)"
+//   1  → show that PR (saves retyping the branch name)
+//   N  → fall back to list with a hint to specify <branch>
 func runPRShow(args []string, log *slog.Logger) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: homa pr show <branch>")
+		cfg, err := config.Load(defaultConfigPath())
+		if err != nil {
+			return err
+		}
+		siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
+		prs, err := prflow.List(cfg.GitBin, siteDir, "main")
+		if err != nil {
+			return fmt.Errorf("list PR branches: %w", err)
+		}
+		switch len(prs) {
+		case 0:
+			fmt.Println("(no PR branches)")
+			return nil
+		case 1:
+			args = []string{prs[0].Name} // fall through to single-PR show
+		default:
+			fmt.Fprintln(os.Stderr, "multiple PR branches open; pass one explicitly:")
+			fmt.Fprintln(os.Stderr)
+			return runPRList(nil, log)
+		}
 	}
 	branch := args[0]
 	pr, ok := prflow.ParsePRBranch(branch)
