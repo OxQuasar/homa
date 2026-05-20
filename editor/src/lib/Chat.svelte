@@ -41,16 +41,26 @@
   // --- auto-scroll / follow mode ---------------------------------------
   //
   // Rule: scroll to bottom on any change IF either
-  //   (a) the user just sent a message (last message has role=user), or
+  //   (a) the messages array just grew AND the new last is from user
+  //       (= user just sent a message — one-time snap so they see it),
   //   (b) the user was already pinned to the bottom (within tolerance).
   // If the user has scrolled up to read history, streaming/new messages
-  // do NOT yank them back — pinned stays false until they manually return.
+  // do NOT yank them back — pinned stays false until they scroll back.
   //
-  // pinned is a plain (non-reactive) variable updated by onscroll, so the
-  // effect reads it without forming a write-loop with itself.
+  // The "grew" gate matters because streaming text deltas re-fire the
+  // effect on every chunk WITHOUT growing the messages array (streaming
+  // bubble is in `streaming`, not pushed until flush). Without the gate,
+  // condition (a) would stay TRUE for the entire assistant response —
+  // forcing the snap even when the user scrolled up.
+  //
+  // pinned + prevLen are plain (non-reactive) variables: $effect reads
+  // them without forming a write-loop, and onScroll mutates pinned
+  // without triggering the effect (we don't want a scroll event to
+  // re-run the snap logic).
 
   let scrollEl: HTMLDivElement | undefined = $state();
   let pinned = true;
+  let prevLen = 0;
 
   function onScroll() {
     if (!scrollEl) return;
@@ -73,8 +83,12 @@
     void _; void __;
 
     if (!scrollEl) return;
+    const grew = len > prevLen;
     const lastIsUser = len > 0 && messages[len - 1].role === 'user';
-    if (lastIsUser || pinned) snapToBottom();
+    prevLen = len;
+    // (a) user just sent — one-time snap, regardless of where they are
+    // (b) already pinned — follow streaming / new messages
+    if ((grew && lastIsUser) || pinned) snapToBottom();
   });
 
   // Re-pin on container size changes (splitter drag, window resize, any
