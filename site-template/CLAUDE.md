@@ -26,7 +26,18 @@ git add -A
 git commit -m "<descriptive message>"
 ```
 
-Author identity is already set in the git config.
+Author identity is supplied as container env vars (`GIT_AUTHOR_NAME` +
+`GIT_AUTHOR_EMAIL`, set by the orchestrator from the user record).
+Git picks these up automatically — **do not** run `git config user.email`
+or `user.name`: the bind-mounted `.git` is shared with `main` and every
+other user's container, so writes to `.git/config` contaminate everyone
+else's commits.
+
+If git ever complains "please tell me who you are":
+- `env | grep ^GIT_` should show GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL.
+- If missing, ask the operator to `homa reload <userid>` (restarts
+  the container with env vars re-injected). Don't work around it by
+  writing `.git/config`.
 
 ## Opening a PR for review
 

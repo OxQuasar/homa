@@ -499,6 +499,70 @@ func TestEnsureRunningEmptyUserID(t *testing.T) {
 	}
 }
 
+// TestGitIdentityEnvInjected — verifies the provisioner injects per-user
+// GIT_AUTHOR_* / GIT_COMMITTER_* env vars from the user record. Prevents
+// the regression where the LLM, finding no git identity in the container,
+// wrote user.email/name to the SHARED site-template/.git/config —
+// contaminating every other user.
+func TestGitIdentityEnvInjected(t *testing.T) {
+	pp, _, _, sb, _ := newRig(t)
+	u := &store.User{
+		ID:               "abcd1234",
+		Email:            "alice@example.com",
+		Name:             "Alice Liddell",
+		Username:         "alice",
+		ContainerName:    "homa-user-abcd1234",
+		WorktreePath:     "/branches/abcd1234",
+		NousPort:         40000,
+		PreviewPort:      40001,
+		PreviewServePort: 10001,
+	}
+	pp.Users = &fakeUserLookup{users: map[string]*store.User{u.ID: u}}
+	if err := pp.EnsureRunning(context.Background(), u.ID); err != nil {
+		t.Fatalf("EnsureRunning: %v", err)
+	}
+	if sb.lastSpec.Env["GIT_AUTHOR_NAME"] != "alice" {
+		t.Errorf("GIT_AUTHOR_NAME: got %q, want alice (= username)", sb.lastSpec.Env["GIT_AUTHOR_NAME"])
+	}
+	if sb.lastSpec.Env["GIT_AUTHOR_EMAIL"] != "alice@example.com" {
+		t.Errorf("GIT_AUTHOR_EMAIL: got %q", sb.lastSpec.Env["GIT_AUTHOR_EMAIL"])
+	}
+	if sb.lastSpec.Env["GIT_COMMITTER_NAME"] != "alice" {
+		t.Errorf("GIT_COMMITTER_NAME: got %q", sb.lastSpec.Env["GIT_COMMITTER_NAME"])
+	}
+	if sb.lastSpec.Env["GIT_COMMITTER_EMAIL"] != "alice@example.com" {
+		t.Errorf("GIT_COMMITTER_EMAIL: got %q", sb.lastSpec.Env["GIT_COMMITTER_EMAIL"])
+	}
+}
+
+// TestGitIdentityFallsBackWhenUsernameMissing — legacy users with empty
+// username + name fall back to userID; empty email falls back to
+// <name>@homa.local so git doesn't crash on commit.
+func TestGitIdentityFallsBackWhenUsernameMissing(t *testing.T) {
+	pp, _, _, sb, _ := newRig(t)
+	u := &store.User{
+		ID:               "deadbeef",
+		Email:            "",
+		Name:             "",
+		Username:         "",
+		ContainerName:    "homa-user-deadbeef",
+		WorktreePath:     "/branches/deadbeef",
+		NousPort:         40010,
+		PreviewPort:      40011,
+		PreviewServePort: 10010,
+	}
+	pp.Users = &fakeUserLookup{users: map[string]*store.User{u.ID: u}}
+	if err := pp.EnsureRunning(context.Background(), u.ID); err != nil {
+		t.Fatalf("EnsureRunning: %v", err)
+	}
+	if sb.lastSpec.Env["GIT_AUTHOR_NAME"] != "deadbeef" {
+		t.Errorf("fallback to userID: got %q", sb.lastSpec.Env["GIT_AUTHOR_NAME"])
+	}
+	if sb.lastSpec.Env["GIT_AUTHOR_EMAIL"] != "deadbeef@homa.local" {
+		t.Errorf("synthetic email: got %q", sb.lastSpec.Env["GIT_AUTHOR_EMAIL"])
+	}
+}
+
 // TestEnsureRunningPropagatesEnsureError — sandbox.Ensure fails → bubbles up.
 func TestEnsureRunningPropagatesEnsureError(t *testing.T) {
 	pp, _, _, sb, _ := newRig(t)

@@ -119,10 +119,45 @@ const codeServerDataContainerPath = "/root/.local/share/code-server"
 // the orchestrator has both a secret AND the user has a code-server port
 // allocated — that combination is what tells the entrypoint to launch
 // code-server.
-func (pp *PodmanProvisioner) buildContainerEnv(userID string, codeServerAllocated bool) map[string]string {
+func (pp *PodmanProvisioner) buildContainerEnv(ctx context.Context, userID string, codeServerAllocated bool) map[string]string {
 	env := map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey}
 	if codeServerAllocated && len(pp.CodeServerSecret) > 0 {
 		env["HOMA_CODE_SERVER_PASSWORD"] = codeserver.PasswordFor(pp.CodeServerSecret, userID)
+	}
+	// Per-user git identity. Without this, git inside the container
+	// asks "please tell me who you are" on any commit. The LLM workaround
+	// — writing user.email/name to the shared .git/config — pollutes
+	// every other user's container, since site-template/.git is a
+	// single bind-mounted directory.
+	//
+	// Env vars take precedence over any user.email/name in config at
+	// commit time, so this is the right scope: per-container, not
+	// touching shared repo state.
+	//
+	// Prefer username (the public-facing identifier shown on forum/
+	// PR author column); fall back to email-prefix. Email is the user's
+	// real address — fine to expose in commit history as the author.
+	//
+	// pp.Users may be nil in narrow test rigs that exercise the
+	// provisioner without a store — skip git identity then.
+	if pp.Users != nil {
+		if u, err := pp.Users.GetUserByID(ctx, userID); err == nil && u != nil {
+			name := u.Username
+			if name == "" {
+				name = u.Name
+			}
+			if name == "" {
+				name = userID // last-resort: 8-hex id
+			}
+			email := u.Email
+			if email == "" {
+				email = name + "@homa.local"
+			}
+			env["GIT_AUTHOR_NAME"] = name
+			env["GIT_AUTHOR_EMAIL"] = email
+			env["GIT_COMMITTER_NAME"] = name
+			env["GIT_COMMITTER_EMAIL"] = email
+		}
 	}
 	return env
 }
@@ -213,7 +248,7 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 		CodeServerPort: specCodeServerPort,
 		MemoryLimit:    pp.MemoryLimit,
 		CPULimit:       pp.CPULimit,
-		Env:            pp.buildContainerEnv(userID, codeServerOn),
+		Env:            pp.buildContainerEnv(ctx, userID, codeServerOn),
 		Mounts:         pp.extraMounts(userID),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
@@ -517,7 +552,7 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 		CodeServerPort: specCodeServerPort,
 		MemoryLimit:    pp.MemoryLimit,
 		CPULimit:       pp.CPULimit,
-		Env:            pp.buildContainerEnv(u.ID, codeServerOn),
+		Env:            pp.buildContainerEnv(ctx, u.ID, codeServerOn),
 		Mounts:         pp.extraMounts(u.ID),
 	}
 	if err := pp.Sandbox.Ensure(ctx, spec); err != nil {
