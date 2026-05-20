@@ -14,9 +14,20 @@
     speed?: number;
     /** ms before typing starts (lets figure & bubble fade in first) */
     startDelay?: number;
+    /** When set, the encounter auto-advances: after typing finishes,
+     *  wait this many ms, then call `onDone()`. Suppresses the Enter
+     *  button. Ignored if `actions` is provided (manual choice). */
+    autoAdvanceMs?: number;
   }
 
-  let { text, onDone, actions, speed = 38, startDelay = 900 }: Props = $props();
+  let {
+    text,
+    onDone,
+    actions,
+    speed = 38,
+    startDelay = 900,
+    autoAdvanceMs,
+  }: Props = $props();
 
   let typed = $state('');
   let done = $state(false);
@@ -39,6 +50,19 @@
       clearTimeout(startId);
       if (interval) clearInterval(interval);
     };
+  });
+
+  // Auto-advance: once typing finishes, optionally fire onDone after a
+  // pause. Skipped when caller supplies `actions` (manual choice region)
+  // or when no onDone is provided. Cleanup cancels the timer if the
+  // overlay unmounts mid-pause.
+  $effect(() => {
+    if (!done) return;
+    if (actions) return;
+    if (autoAdvanceMs === undefined) return;
+    if (!onDone) return;
+    const id = setTimeout(onDone, autoAdvanceMs);
+    return () => clearTimeout(id);
   });
 </script>
 
@@ -82,7 +106,10 @@
            Sign up + Log in here). Default Enter button below is
            skipped when this snippet is provided. -->
       <div class="actions">{@render actions()}</div>
-    {:else if onDone}
+    {:else if onDone && autoAdvanceMs === undefined}
+      <!-- Manual button hidden in auto-advance mode — the timer will
+           call onDone itself, so showing a button you don't need to
+           press would be confusing. -->
       <button class="enter-btn" onclick={onDone}>Enter</button>
     {/if}
   {/if}

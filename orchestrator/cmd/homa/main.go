@@ -114,8 +114,8 @@ const usageText = `usage:
 
   homa pr list                   list all pr/<userid>/<topic> branches with stats vs main
   homa pr show [<branch>]        diff + commits for a PR branch (no arg = single open PR)
-  homa pr merge <branch>         git-merge a PR branch into main (same flow as 'homa merge')
-  homa pr close <branch>         delete a PR branch without merging
+  homa pr merge [<branch>]       git-merge a PR branch into main (no arg = single open PR)
+  homa pr close [<branch>]       delete a PR branch without merging (no arg = single open PR)
 `
 
 func run(configPath string, log *slog.Logger) error {
@@ -824,36 +824,47 @@ func runPRList(args []string, log *slog.Logger) error {
 	return nil
 }
 
-// runPRShow prints the diff + commit list for a PR branch.
+// resolvePRBranch returns the PR branch the user means. With an
+// explicit arg, that arg. With no arg:
+//   0 PRs open  → ("", "(no PR branches)" printed, nil err — caller returns)
+//   1 PR open   → that PR's branch name
+//   N PRs open  → ("", list-with-hint printed, nil err — caller returns)
 //
-// With no args: do-what-I-mean dispatch based on PR count:
-//   0  → "(no PR branches)"
-//   1  → show that PR (saves retyping the branch name)
-//   N  → fall back to list with a hint to specify <branch>
-func runPRShow(args []string, log *slog.Logger) error {
-	if len(args) < 1 {
-		cfg, err := config.Load(defaultConfigPath())
-		if err != nil {
-			return err
-		}
-		siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
-		prs, err := prflow.List(cfg.GitBin, siteDir, "main")
-		if err != nil {
-			return fmt.Errorf("list PR branches: %w", err)
-		}
-		switch len(prs) {
-		case 0:
-			fmt.Println("(no PR branches)")
-			return nil
-		case 1:
-			args = []string{prs[0].Name} // fall through to single-PR show
-		default:
-			fmt.Fprintln(os.Stderr, "multiple PR branches open; pass one explicitly:")
-			fmt.Fprintln(os.Stderr)
-			return runPRList(nil, log)
-		}
+// `verb` ("show"/"merge"/"close") customizes the hint message. Returns
+// non-nil error only on config / git read failures (the no-PR /
+// multi-PR cases are NOT errors — caller checks branch=="" and exits).
+func resolvePRBranch(args []string, verb string, log *slog.Logger) (string, error) {
+	if len(args) >= 1 {
+		return args[0], nil
 	}
-	branch := args[0]
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return "", err
+	}
+	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
+	prs, err := prflow.List(cfg.GitBin, siteDir, "main")
+	if err != nil {
+		return "", fmt.Errorf("list PR branches: %w", err)
+	}
+	switch len(prs) {
+	case 0:
+		fmt.Println("(no PR branches)")
+		return "", nil
+	case 1:
+		return prs[0].Name, nil
+	default:
+		fmt.Fprintf(os.Stderr, "multiple PR branches open; pass one to '%s' explicitly:\n\n", verb)
+		return "", runPRList(nil, log)
+	}
+}
+
+// runPRShow prints the diff + commit list for a PR branch.
+// Bare invocation = single-PR shortcut; see resolvePRBranch.
+func runPRShow(args []string, log *slog.Logger) error {
+	branch, err := resolvePRBranch(args, "show", log)
+	if err != nil || branch == "" {
+		return err
+	}
 	pr, ok := prflow.ParsePRBranch(branch)
 	if !ok {
 		return fmt.Errorf("not a PR branch (expected pr/<userid>/<topic>): %s", branch)
@@ -915,10 +926,10 @@ func runPRShow(args []string, log *slog.Logger) error {
 // source of truth; uncommitted state in user/<id>/ worktree is
 // unrelated).
 func runPRMerge(args []string, log *slog.Logger) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: homa pr merge <branch>")
+	branch, err := resolvePRBranch(args, "merge", log)
+	if err != nil || branch == "" {
+		return err
 	}
-	branch := args[0]
 	pr, ok := prflow.ParsePRBranch(branch)
 	if !ok {
 		return fmt.Errorf("not a PR branch: %s", branch)
@@ -947,10 +958,10 @@ func runPRMerge(args []string, log *slog.Logger) error {
 
 // runPRClose deletes a PR branch without merging.
 func runPRClose(args []string, log *slog.Logger) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: homa pr close <branch>")
+	branch, err := resolvePRBranch(args, "close", log)
+	if err != nil || branch == "" {
+		return err
 	}
-	branch := args[0]
 	if _, ok := prflow.ParsePRBranch(branch); !ok {
 		return fmt.Errorf("not a PR branch: %s", branch)
 	}

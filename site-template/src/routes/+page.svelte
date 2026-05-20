@@ -1,13 +1,53 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import Hero from '$lib/Hero.svelte';
   import GuardEncounter from '$lib/GuardEncounter.svelte';
+  import { fetchMe, type AuthState } from '$lib/auth';
 
   let started = $state(false);
+  let speech = $state('');
+  // When set, GuardEncounter auto-navigates after typing finishes (no
+  // Enter button). Used for the logged-in flow.
+  let autoMs = $state<number | undefined>(undefined);
+  let auth = $state<AuthState | null>(null);
 
-  const intro =
-    'Welcome to the White Tower. Here is learning and building. ' +
+  // Resolve auth in the background. /me is fast and same-origin; by the
+  // time a visitor reads the page and clicks Knock, this has almost
+  // certainly settled. We don't block the UI on it.
+  onMount(async () => {
+    auth = await fetchMe();
+  });
+
+  // Anonymous visitor — the original gatekeeper speech.
+  const anonIntro =
+    'Welcome to the White Tower. ' +
     'You may choose to visit our grounds and library. Will you enter?';
+
+  // Logged-in visitor — short recognition, then auto-advance.
+  function authedIntro(a: AuthState): string {
+    const name = a.username ? ` ${a.username}` : '';
+    return `Welcome Back${name}.`;
+  }
+
+  // Snapshot speech + mode at click time, not reactively. If we passed
+  // a $derived to GuardEncounter, a late /me response would mutate the
+  // text prop mid-typewriter and restart it (GuardEncounter's $effect
+  // depends on `text`). Capturing here makes the encounter stable.
+  //
+  // Two flows:
+  //   anon   — full greeting, manual Enter button (autoMs undefined)
+  //   authed — short greeting, 1s pause, auto-navigate
+  function knock() {
+    if (auth?.authed) {
+      speech = authedIntro(auth);
+      autoMs = 1000;
+    } else {
+      speech = anonIntro;
+      autoMs = undefined;
+    }
+    started = true;
+  }
 </script>
 
 <svelte:head>
@@ -16,11 +56,12 @@
 </svelte:head>
 
 <!--
-  Login link in the top-right corner. For now it points at the SPA's login
-  page; once we move the auth UI inline into this site, this hook stays
-  put and we swap its target / replace it with a logged-in-state indicator.
+  Login pill, anonymous visitors only. Hidden while /me is in flight to
+  prevent a flash for returning visitors. Logout lives elsewhere.
 -->
-<a class="login-link" href="/login">Login</a>
+{#if auth && !auth.authed}
+  <a class="login-link" href="/login">Login</a>
+{/if}
 
 <Hero
   image="/uploads/whitetower.jpg"
@@ -29,13 +70,17 @@
   titleY="22%"
   ctaLabel="Knock"
   ctaY="68%"
-  onCta={() => (started = true)}
+  onCta={knock}
   ctaHidden={started}
   nightTint
 />
 
 {#if started}
-  <GuardEncounter text={intro} onDone={() => goto('/enter')} />
+  <GuardEncounter
+    text={speech}
+    onDone={() => goto('/enter')}
+    autoAdvanceMs={autoMs}
+  />
 {/if}
 
 <style>
