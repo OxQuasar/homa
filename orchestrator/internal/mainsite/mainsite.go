@@ -52,6 +52,12 @@ type Config struct {
 	// MemoryLimit / CPULimit pass through to `podman run --memory=/--cpus=`.
 	MemoryLimit string
 	CPULimit    string
+
+	// LibraryDir bind-mounted RO at /library inside homa-main so the
+	// public SvelteKit pages' +page.server.ts load functions can read
+	// from /library/iching etc. Same content the per-user containers
+	// + the /api/library/* endpoint serve. Empty disables the mount.
+	LibraryDir string
 }
 
 // Manager runs the mainsite sandbox and the watchdog that restarts it on
@@ -122,6 +128,13 @@ func (m *Manager) ensure(ctx context.Context) error {
 		CPULimit:      m.cfg.CPULimit,
 		Env:           map[string]string{"HOMA_ROLE": "main"},
 		NoAutoRemove:  true, // keep crashed container around for inspection
+	}
+	// Library RO bind — same source as user containers + /api/library/.
+	// Lets +page.server.ts load functions read /library/iching/* directly.
+	if m.cfg.LibraryDir != "" {
+		spec.Mounts = append(spec.Mounts, sandbox.Mount{
+			Src: m.cfg.LibraryDir, Dst: "/library", ReadOnly: true,
+		})
 	}
 	return m.sb.Ensure(ctx, spec)
 }

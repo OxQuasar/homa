@@ -2,8 +2,10 @@
   // Root layout — persists across navigations. Runs the auth check
   // once and shows a global Editor pill for logged-in users.
   //
-  // The pill hides when already inside /editor (the per-page Back
-  // link there handles return navigation).
+  // Position: top-right. Mirrors the anon Login pill in shape and
+  // location; the two are mutually exclusive (Login = anon only,
+  // Editor = authed only) so they never collide. Leaves top-left
+  // free for per-page Back links.
 
   import { onMount } from 'svelte';
   import { page } from '$app/state';
@@ -34,23 +36,23 @@
 <style>
   .editor-pill {
     position: fixed;
-    top: 0.55rem;
-    left: 0.55rem;
+    top: 1.25rem;
+    right: 1.5rem;        /* mirrors the Login pill slot */
     z-index: 40;          /* over the Guard overlay (z=20–30) too */
-    padding: 0.3rem 0.85rem;
+    padding: 0.45rem 1.1rem;
     border-radius: 999px;
     font-family: 'Inter', system-ui, sans-serif;
-    font-size: 0.78rem;
-    letter-spacing: 0.06em;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
     color: #f5f1e6;
     text-decoration: none;
-    background: rgba(0, 0, 0, 0.45);
-    border: 1px solid rgba(245, 241, 230, 0.35);
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(245, 241, 230, 0.45);
     backdrop-filter: blur(6px);
     transition: background 0.18s ease, border-color 0.18s ease;
   }
   .editor-pill:hover {
-    background: rgba(0, 0, 0, 0.65);
-    border-color: rgba(245, 241, 230, 0.7);
+    background: rgba(0, 0, 0, 0.45);
+    border-color: rgba(245, 241, 230, 0.85);
   }
 </style>

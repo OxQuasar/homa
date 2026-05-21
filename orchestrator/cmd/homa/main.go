@@ -256,6 +256,7 @@ func run(configPath string, log *slog.Logger) error {
 				HostPort:        cfg.MainSiteHostPort,
 				MemoryLimit:     cfg.ContainerMemory,
 				CPULimit:        cfg.ContainerCPUs,
+				LibraryDir:      cfg.LibraryDir,
 			},
 			log,
 		)
