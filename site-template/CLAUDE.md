@@ -109,6 +109,32 @@ change the speech text + adjust action labels as needed.
 `/signup` and `/login` are SPA routes served by the orchestrator (same
 origin), so anchor tags like `<a href="/signup">` route there directly.
 
+## Paths owned by the orchestrator (do NOT recreate as SvelteKit routes)
+
+The orchestrator's static handler intercepts these URLs **before** the
+site-template proxy. Adding a SvelteKit `+page.svelte` at the same
+path appears to work locally (SvelteKit's client router catches in-page
+`<a>` clicks and renders your placeholder without a real HTTP fetch),
+but breaks when:
+- User types the URL or hits Enter in the address bar
+- User does a hard refresh
+- External link / new tab opens the URL
+
+In short: SvelteKit hijacks the route client-side; the orchestrator
+serves the canonical handler server-side. A mismatch is just hidden
+dead code.
+
+Reserved:
+- `/editor`        → orchestrator's editor SPA
+- `/signup`        → SPA signup form
+- `/login`         → SPA login form
+- `/logout`        → POST endpoint (logout)
+- `/me`            → JSON auth-check endpoint
+- `/api/*`         → orchestrator JSON APIs (forum/messages/users/etc.)
+- `/assets/*`      → SPA bundle assets
+
+Free-for-the-taking: anything else (`/`, `/forum/*`, `/library/*`, etc.).
+
 ## What NOT to do
 
 - Don't merge anything into `main` yourself — main is operator-controlled.
