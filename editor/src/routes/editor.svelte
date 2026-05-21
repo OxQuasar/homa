@@ -654,6 +654,11 @@
 
 <div class="layout">
   <header>
+    <button
+      class="close-editor"
+      onclick={() => window.location.assign('/')}
+      title="Close editor — back to the public site (session stays alive)"
+    >← Close</button>
     <div class="brand">homa</div>
     <div class="meta">
       <span class="email">{userEmail}</span>
@@ -805,6 +810,18 @@
     padding: 0.4rem 0.8rem; border-bottom: 1px solid #ddd; background: #fff;
   }
   .brand { font-weight: 700; }
+  /* Close-editor — symmetric counterpart to "Log out" at the right.
+     Navigates to /, leaving session + cookie intact. */
+  .close-editor {
+    padding: 0.3rem 0.7rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fafafa;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: #555;
+  }
+  .close-editor:hover { background: #eee; border-color: #bbb; color: #222; }
   .meta { display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem; }
   .email { color: #555; }
   .status { padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.7rem; text-transform: uppercase; }
