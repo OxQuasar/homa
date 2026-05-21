@@ -95,6 +95,27 @@ Helpers in `src/lib/`:
 - `forum.ts`, `messages.ts`, `users.ts`, `auth.ts` — API client wrappers
   for the orchestrator's `/api/...` endpoints (all same-origin, cookie-authed)
 
+## Reference content at /library/ (read-only)
+
+The operator maintains shared reference material at `/library/` inside
+the sandbox (bind-mounted RO; same source served to public visitors
+via the `/api/library/*` endpoints below). Use it for context when
+writing pages about specific subjects.
+
+```bash
+ls /library/                    # → iching, [other collections...]
+ls /library/iching/             # → atlas, atlas-hzl, dynamics, ...
+cat /library/iching/directory.md  # → operator's notes on what's there
+cat /library/iching/atlas/01_atlas.py
+```
+
+When writing a SvelteKit page that links to these files, use the
+public URL pattern: `/api/library/iching/atlas/01_atlas.py` (not the
+container path). Visitors fetch via that URL.
+
+Don't modify anything in `/library/` — RO bind, and edits would only
+exist inside your container anyway (the host file is the source).
+
 ## Auth-gated pages convention
 
 A page that requires login wraps itself via its directory's
@@ -165,6 +186,9 @@ GET  /api/messages/conversations      DM conversation list
 GET  /api/messages/unread-count       unread badge
 GET  /api/messages/with/{userId}      thread (oldest first; marks read)
 POST /api/messages/with/{userId}      send DM          {content}
+
+GET  /api/library/<subpath>/          JSON list: [{name, is_dir, size}, ...]
+GET  /api/library/<subpath>/file.ext  raw file contents
 ```
 
 All cookie-required except `/signup` + `/login`.

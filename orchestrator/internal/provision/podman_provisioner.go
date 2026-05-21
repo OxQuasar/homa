@@ -56,6 +56,15 @@ type PodmanProvisioner struct {
 	// the code-server feature; user containers won't get a PASSWORD env
 	// var and the entrypoint will skip launching code-server.
 	CodeServerSecret []byte
+	// LibraryDir is an absolute host path to operator-managed reference
+	// content (typically <DataDir>/docs/). When non-empty AND the
+	// directory exists, it's bind-mounted RO into every user container
+	// at /library so the sandbox LLM can read reference material.
+	// Same source is served via /api/library/* by the orchestrator
+	// to public visitors. Empty disables the feature (no mount; the
+	// /api/library/* handler returns 404).
+	LibraryDir string
+
 	// ClaudeCredentialsPath is an absolute host path to a Claude Code
 	// `.credentials.json`. When non-empty AND the file exists at
 	// Provision/EnsureRunning time, the file is bind-mounted read-only into
@@ -112,6 +121,12 @@ func codeServerDataVolumeName(userID string) string {
 // lives inside the sandbox. Matches the Containerfile path + the
 // --user-data-dir flag in entrypoint.sh.
 const codeServerDataContainerPath = "/root/.local/share/code-server"
+
+// libraryContainerPath is where the operator's reference content
+// (data/docs/) appears inside the sandbox, read-only. The LLM reads
+// from here for context; the orchestrator serves the same files via
+// /api/library/* to public visitors. Two access paths, one source.
+const libraryContainerPath = "/library"
 
 // buildContainerEnv returns the env map the user's sandbox should run
 // with. AnthropicAPIKey is always set (empty when unconfigured — nous
@@ -361,6 +376,22 @@ func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 		} else if !os.IsNotExist(err) {
 			pp.Log.Warn("claude credentials stat failed",
 				"path", pp.ClaudeCredentialsPath, "err", err)
+		}
+	}
+	// Operator-managed reference content (data/docs/ → /library/, RO).
+	// The sandbox LLM can `ls /library/`, `cat /library/iching/...` to
+	// understand what reference material exists. Same source of truth as
+	// the orchestrator's /api/library/* HTTP handler serves to visitors.
+	// Skipped silently when LibraryDir is unset or doesn't exist —
+	// keeps the feature opt-in.
+	if pp.LibraryDir != "" {
+		if _, err := os.Stat(pp.LibraryDir); err == nil {
+			out = append(out, sandbox.Mount{
+				Src: pp.LibraryDir, Dst: libraryContainerPath, ReadOnly: true,
+			})
+		} else if !os.IsNotExist(err) {
+			pp.Log.Warn("library dir stat failed",
+				"path", pp.LibraryDir, "err", err)
 		}
 	}
 	return out

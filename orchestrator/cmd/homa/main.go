@@ -32,6 +32,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/config"
 	"github.com/skipper/homa/orchestrator/internal/cors"
 	"github.com/skipper/homa/orchestrator/internal/forum"
+	"github.com/skipper/homa/orchestrator/internal/library"
 	"github.com/skipper/homa/orchestrator/internal/messages"
 	"github.com/skipper/homa/orchestrator/internal/usersapi"
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
@@ -228,6 +229,11 @@ func run(configPath string, log *slog.Logger) error {
 
 	// Direct messages between users. Same auth + CORS posture.
 	messages.New(messages.NewStore(st.DB()), log).Register(mux, authSvc, corsPolicy.Middleware)
+
+	// Library — operator-managed reference content served at
+	// /api/library/* (auth-required). Same dir is bind-mounted RO
+	// into user containers at /library so the LLM has read access.
+	library.New(cfg.LibraryDir, log).Register(mux, authSvc, corsPolicy.Middleware)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)
@@ -372,6 +378,7 @@ func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, p
 		CPULimit:              cfg.ContainerCPUs,
 		AnthropicAPIKey:       apiKey,
 		ClaudeCredentialsPath: credsPath,
+		LibraryDir:            cfg.LibraryDir,
 		UserConfigsDir:        userConfigsDir,
 		NousConfigTemplate:    nousConfigTemplate,
 		CodeServerSecret:      codeServerSecret,

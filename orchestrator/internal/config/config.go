@@ -206,6 +206,13 @@ type Config struct {
 	// for VS Code (scheme + port are derived). Empty → parse the host
 	// out of PreviewBaseURL so a single base URL drives both surfaces.
 	CodeServerHost string `json:"code_server_host"`
+
+	// LibraryDir is the operator-managed reference content directory.
+	// Bind-mounted RO into every user container at /library so the
+	// sandbox LLM can read reference material; also served by the
+	// orchestrator at /api/library/* to public visitors (auth-required).
+	// Empty → "<DataDir>/docs". Resolved relative to config file dir.
+	LibraryDir string `json:"library_dir"`
 }
 
 // Load reads the config from path. If path is empty or missing, returns a
@@ -255,6 +262,7 @@ func resolveRelativePaths(cfg *Config, base string) {
 		&cfg.UserConfigsDir,
 		&cfg.NousConfigTemplate,
 		&cfg.CodeServerSecretPath,
+		&cfg.LibraryDir,
 	} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(base, *p)
@@ -343,6 +351,11 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.CodeServerSecretPath == "" {
 		cfg.CodeServerSecretPath = filepath.Join(cfg.DataDir, "code_server_secret")
+	}
+	// Library defaults to <DataDir>/docs (matches the operator's
+	// convention; opt-out by setting "" in config).
+	if cfg.LibraryDir == "" {
+		cfg.LibraryDir = filepath.Join(cfg.DataDir, "docs")
 	}
 	if cfg.MainSiteHostPort == 0 {
 		cfg.MainSiteHostPort = defaultMainSiteHostPort
