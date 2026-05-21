@@ -67,29 +67,11 @@
 </script>
 
 <div class="overlay" role="dialog" aria-live="polite">
-  <!-- hooded sentinel standing at the door -->
+  <!-- hooded sentinel standing at the door. Photo from Pexels 33006404;
+       has its own dark backdrop, so a radial mask vignettes the edges
+       to blend with the overlay scrim. -->
   <div class="figure">
-    <svg viewBox="0 0 140 320" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <!-- staff -->
-      <rect x="118" y="28" width="3" height="280" fill="#15152a" />
-      <circle cx="119.5" cy="26" r="5.5" fill="#15152a" />
-      <!-- cloaked body -->
-      <path d="
-        M 60 8
-        C 42 8, 28 22, 26 46
-        C 24 64, 30 78, 38 88
-        C 28 92, 16 106, 12 136
-        C 6 176, 6 270, 10 320
-        L 110 320
-        C 114 270, 114 176, 108 136
-        C 104 106, 92 92, 82 88
-        C 90 78, 96 64, 94 46
-        C 92 22, 78 8, 60 8
-        Z
-      " fill="#06060e" />
-      <!-- hood shadow hint -->
-      <ellipse cx="60" cy="50" rx="13" ry="17" fill="#15152a" opacity="0.55" />
-    </svg>
+    <img src="/images/guard.jpg" alt="" />
   </div>
 
   <!-- speech bubble -->
@@ -132,17 +114,33 @@
   .figure {
     position: absolute;
     left: 50%;
-    bottom: 6vh;
+    bottom: 4vh;
     transform: translateX(-50%);
-    height: 42vh;
-    max-height: 540px;
+    height: 60vh;
+    max-height: 720px;
     opacity: 0;
-    filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.8));
+    filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.85));
     animation: rise 700ms ease 250ms forwards;
   }
-  .figure svg {
+  .figure img {
     height: 100%;
     width: auto;
+    display: block;
+    /* Darken the statue's colours to match the night palette (formal,
+       muted). Tune these two values to taste. */
+    filter: brightness(0.5) saturate(0.65);
+    /* Radial vignette mask blends the photo's own backdrop into the
+       overlay scrim so the rectangle of the image isn't visible. */
+    -webkit-mask-image: radial-gradient(
+      ellipse 55% 75% at 50% 55%,
+      #000 45%,
+      transparent 100%
+    );
+    mask-image: radial-gradient(
+      ellipse 55% 75% at 50% 55%,
+      #000 45%,
+      transparent 100%
+    );
   }
 
   @keyframes rise {

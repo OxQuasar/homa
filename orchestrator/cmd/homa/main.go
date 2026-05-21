@@ -446,8 +446,16 @@ func runMerge(args []string, log *slog.Logger) error {
 		return fmt.Errorf("usage: homa merge <userid>")
 	}
 	userID := args[0]
+	// If the user accidentally passed a PR branch name (pr/<userid>/<topic>)
+	// to `homa merge`, route to `homa pr merge` instead. Same intent, just
+	// the wrong subcommand. Saves the operator from re-typing.
+	if prflow.IsPRBranch(userID) {
+		log.Info("merge: PR branch name detected — routing to pr merge", "branch", userID)
+		return runPRMerge(args, log)
+	}
 	if !userIDPattern.MatchString(userID) {
-		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
+		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars). "+
+			"For PR branches use: homa pr merge <branch>", userID)
 	}
 
 	cfg, err := config.Load(defaultConfigPath())

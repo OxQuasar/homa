@@ -10,7 +10,8 @@
 <a class="back-link" href="/" aria-label="Back to the White Tower">← Back</a>
 
 <a class="side-link left" href="/library">Library</a>
-<a class="side-link right" href="/forum">Forum</a>
+<a class="side-link center" href="/forum">Forum</a>
+<a class="side-link right" href="/mysteries">Mysteries</a>
 
 <Hero
   image="/images/moonlit-courtyard.jpg"
@@ -58,8 +59,9 @@
     backdrop-filter: blur(6px);
     transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
   }
-  .side-link.left  { left: 25%; }
-  .side-link.right { left: 55%; }
+  .side-link.left   { left: 25%; }
+  .side-link.center { left: 55%; }
+  .side-link.right  { left: 80%; }
   .side-link:hover {
     transform: translate(-50%, -50%) translateY(-1px);
     background: rgba(0, 0, 0, 0.55);
