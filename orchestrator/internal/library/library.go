@@ -1,5 +1,5 @@
 // Package library serves the operator-managed reference content
-// (cfg.LibraryDir, typically ~/homa/data/docs/) to public visitors at
+// (cfg.LibraryDir, typically ~/homa/data/library/) to public visitors at
 //
 //   GET /api/library/                                  → JSON list of top-level entries
 //   GET /api/library/<subpath>/                        → JSON list of subdir entries
@@ -34,7 +34,7 @@ type CORSWrapper func(http.Handler) http.Handler
 // Handler serves the library tree. Constructed once at startup;
 // auth-gated by Register.
 type Handler struct {
-	root string // absolute path, e.g. /home/quasar/homa/data/docs
+	root string // absolute path, e.g. /home/quasar/homa/data/library
 	log  *slog.Logger
 }
 

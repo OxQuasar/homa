@@ -352,10 +352,10 @@ func applyDefaults(cfg *Config) {
 	if cfg.CodeServerSecretPath == "" {
 		cfg.CodeServerSecretPath = filepath.Join(cfg.DataDir, "code_server_secret")
 	}
-	// Library defaults to <DataDir>/docs (matches the operator's
-	// convention; opt-out by setting "" in config).
+	// Library defaults to <DataDir>/library. Opt-out by setting "" in
+	// config; opt-elsewhere by setting an absolute or relative path.
 	if cfg.LibraryDir == "" {
-		cfg.LibraryDir = filepath.Join(cfg.DataDir, "docs")
+		cfg.LibraryDir = filepath.Join(cfg.DataDir, "library")
 	}
 	if cfg.MainSiteHostPort == 0 {
 		cfg.MainSiteHostPort = defaultMainSiteHostPort

@@ -33,7 +33,7 @@ type rig struct {
 func newRig(t *testing.T, withAuth bool) *rig {
 	t.Helper()
 	tmp := t.TempDir()
-	root := filepath.Join(tmp, "docs")
+	root := filepath.Join(tmp, "library")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

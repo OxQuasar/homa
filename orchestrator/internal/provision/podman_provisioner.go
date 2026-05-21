@@ -123,7 +123,7 @@ func codeServerDataVolumeName(userID string) string {
 const codeServerDataContainerPath = "/root/.local/share/code-server"
 
 // libraryContainerPath is where the operator's reference content
-// (data/docs/) appears inside the sandbox, read-only. The LLM reads
+// (data/library/) appears inside the sandbox, read-only. The LLM reads
 // from here for context; the orchestrator serves the same files via
 // /api/library/* to public visitors. Two access paths, one source.
 const libraryContainerPath = "/library"
@@ -378,7 +378,7 @@ func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 				"path", pp.ClaudeCredentialsPath, "err", err)
 		}
 	}
-	// Operator-managed reference content (data/docs/ → /library/, RO).
+	// Operator-managed reference content (data/library/ → /library/, RO).
 	// The sandbox LLM can `ls /library/`, `cat /library/iching/...` to
 	// understand what reference material exists. Same source of truth as
 	// the orchestrator's /api/library/* HTTP handler serves to visitors.
