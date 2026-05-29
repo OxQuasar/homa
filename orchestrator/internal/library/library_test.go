@@ -49,8 +49,7 @@ func newRig(t *testing.T, withAuth bool) *rig {
 			ID: "abcd1234", Email: "u@x", PasswordHash: "$2a", Username: "u",
 			BranchName: "u/x", WorktreePath: "/wt", ContainerName: "c", NousPort: 1,
 			PreviewPort: 2, PreviewServePort: 3, NousSessionID: "s",
-			CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1,
-		}
+			CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1, Approved: true,		}
 		if err := st.CreateUser(context.Background(), u); err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}

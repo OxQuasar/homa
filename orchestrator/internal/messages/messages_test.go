@@ -42,15 +42,15 @@ func newRig(t *testing.T) *rig {
 		{ID: "alice001", Email: "a@x", PasswordHash: "$2a", Username: "alice",
 			BranchName: "u/a", WorktreePath: "/wt", ContainerName: "c1",
 			NousPort: 1, PreviewPort: 2, PreviewServePort: 3, NousSessionID: "s",
-			CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1},
+			CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1, Approved: true},
 		{ID: "bob00001", Email: "b@x", PasswordHash: "$2a", Username: "bob",
 			BranchName: "u/b", WorktreePath: "/wt", ContainerName: "c2",
 			NousPort: 4, PreviewPort: 5, PreviewServePort: 6, NousSessionID: "s2",
-			CreatedAt: 2, LastActiveAt: 2, LastMessageAt: 2},
+			CreatedAt: 2, LastActiveAt: 2, LastMessageAt: 2, Approved: true},
 		{ID: "carol001", Email: "c@x", PasswordHash: "$2a", Username: "carol",
 			BranchName: "u/c", WorktreePath: "/wt", ContainerName: "c3",
 			NousPort: 7, PreviewPort: 8, PreviewServePort: 9, NousSessionID: "s3",
-			CreatedAt: 3, LastActiveAt: 3, LastMessageAt: 3},
+			CreatedAt: 3, LastActiveAt: 3, LastMessageAt: 3, Approved: true},
 	}
 	tokens := map[string]string{
 		"alice001": "alicetokalicetokalicetokalicetok",

@@ -212,6 +212,56 @@ func TestApprove_UnknownUserIs404(t *testing.T) {
 	}
 }
 
+// TestReject_RevokesActiveSessions — admin reject must immediately
+// invalidate the target's web_sessions row(s) so existing cookies stop
+// working. Without this, a rejected user keeps editor access until
+// the cookie naturally expires (30 days).
+func TestReject_RevokesActiveSessions(t *testing.T) {
+	r := newRig(t)
+	// 'approved' user (alice) is currently logged in (cookie set up
+	// in newRig). Confirm: a /api/admin/users call as alice fails
+	// (non-admin) but proves her session is valid (gate check returns
+	// 403 'admin only', not 401).
+	resp1 := r.do(t, "GET", "/api/admin/users", "approved", nil)
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusForbidden {
+		t.Fatalf("pre-reject sanity: got %d, want 403 (alice valid auth, non-admin)", resp1.StatusCode)
+	}
+	// Now reject alice as admin.
+	resp2 := r.do(t, "POST", "/api/admin/users/approved/reject", "adminxxx", nil)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("reject: %d", resp2.StatusCode)
+	}
+	// Same call as alice now fails with 401 (cookie nuked) — gate check
+	// kicks in via RequireAuth's lookupUser, OR the session is gone.
+	resp3 := r.do(t, "GET", "/api/admin/users", "approved", nil)
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusUnauthorized {
+		t.Errorf("post-reject: got %d, want 401 (cookie should be revoked)", resp3.StatusCode)
+	}
+}
+
+// TestRequireAuth_GatesOnRejected — even if web_session somehow stays
+// (admin reject path failed mid-flight, or external revocation
+// scenario), RequireAuth still locks out the user on every request
+// via the gate check in lookupUser.
+func TestRequireAuth_GatesOnRejected(t *testing.T) {
+	r := newRig(t)
+	// Flip alice's rejected flag directly in the DB without going
+	// through the admin reject endpoint (which would also revoke
+	// sessions). Simulates a stale-but-still-mounted cookie.
+	if err := r.store.SetRejected(context.Background(), "approved", true); err != nil {
+		t.Fatalf("SetRejected: %v", err)
+	}
+	// alice's call should now 401 because lookupUser sees Rejected=true.
+	resp := r.do(t, "GET", "/api/admin/users", "approved", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestCORSPreflight(t *testing.T) {
 	r := newRig(t)
 	for _, p := range []string{

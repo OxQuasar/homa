@@ -59,8 +59,7 @@ func newHarness(t *testing.T) *uploadHarness {
 		ContainerName: "homa-user-" + userID,
 		NousPort:      40000, PreviewPort: 40001, PreviewServePort: 10001,
 		NousSessionID: "sess",
-		CreatedAt:     1, LastActiveAt: 1, LastMessageAt: 1,
-	}
+		CreatedAt:     1, LastActiveAt: 1, LastMessageAt: 1, Approved: true,	}
 	if err := st.CreateUser(context.Background(), u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

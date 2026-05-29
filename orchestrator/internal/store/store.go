@@ -474,6 +474,21 @@ func (s *Store) GetWebSession(ctx context.Context, token string) (*WebSession, e
 	return &ws, nil
 }
 
+// DeleteWebSessionsByUser nukes every web_session row for the given
+// user — used when admin rejects an account, to invalidate any
+// outstanding cookies immediately rather than waiting for them to
+// expire naturally. Idempotent; no error if the user had no sessions.
+// Returns the count of rows deleted (useful for logs).
+func (s *Store) DeleteWebSessionsByUser(ctx context.Context, userID string) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM web_sessions WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // DeleteWebSession removes a session token; no error if the token didn't exist.
 func (s *Store) DeleteWebSession(ctx context.Context, token string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE token = ?`, token)

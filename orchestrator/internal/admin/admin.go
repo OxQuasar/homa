@@ -137,6 +137,11 @@ func (h *Handler) rejectUser(w http.ResponseWriter, r *http.Request) {
 // setStatus runs the SetApproved or SetRejected store call based on
 // `action`, logs, and returns the updated user row to the caller.
 // Centralised so the two handlers stay identical.
+//
+// reject additionally nukes the target's web_sessions — without this
+// step, an already-logged-in user keeps their cookie working until it
+// expires (30 days). RequireAuth's gate check (introduced alongside
+// this revoke) is the belt; deleting sessions is the suspenders.
 func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, action string) {
 	actor, _ := auth.UserFromContext(r.Context()) // RequireAdmin guarantees presence
 	targetID := r.PathValue("id")
@@ -164,6 +169,18 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, action strin
 		h.log.Error("admin: "+action, "user_id", targetID, "err", err)
 		writeError(w, http.StatusInternalServerError, action+" failed")
 		return
+	}
+	if action == "reject" {
+		// Best-effort: failure to nuke sessions doesn't fail the request
+		// (RequireAuth's gate check still locks out the user). Log loud
+		// so we'd notice if it became chronic.
+		if n, err := h.store.DeleteWebSessionsByUser(ctx, targetID); err != nil {
+			h.log.Warn("admin: reject: revoke sessions failed",
+				"target_user_id", targetID, "err", err)
+		} else if n > 0 {
+			h.log.Info("admin: reject: revoked active sessions",
+				"target_user_id", targetID, "count", n)
+		}
 	}
 	h.log.Info("admin: "+action+"d user",
 		"admin_user_id", actor.ID, "target_user_id", targetID)

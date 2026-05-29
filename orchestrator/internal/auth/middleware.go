@@ -54,6 +54,18 @@ func (s *Service) lookupUser(w http.ResponseWriter, r *http.Request) (*store.Use
 	if err != nil {
 		return nil, err
 	}
+	// Gate check on every authed request — not just at login. Ensures
+	// admin reject/revoke takes effect immediately for already-logged-in
+	// users (otherwise stale cookies stay valid until expiry).
+	// Same treatment as 'session not found' — clear cookie + delete the
+	// row so the user gets bounced cleanly to login.
+	if u.Rejected || !u.Approved {
+		_ = s.store.DeleteWebSession(r.Context(), c.Value)
+		if w != nil {
+			s.clearCookie(w, r)
+		}
+		return nil, nil
+	}
 	return u, nil
 }
 

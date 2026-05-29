@@ -49,8 +49,7 @@ func newRig(t *testing.T, host string, secret []byte, csServePort int) *rig {
 		NousSessionID:       "sess",
 		CodeServerPort:      0,
 		CodeServerServePort: csServePort,
-		CreatedAt:           1, LastActiveAt: 1, LastMessageAt: 1,
-	}
+		CreatedAt:           1, LastActiveAt: 1, LastMessageAt: 1, Approved: true,	}
 	if err := st.CreateUser(context.Background(), u); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -185,10 +184,10 @@ func TestCodeURL_DifferentUsersDifferentURLs(t *testing.T) {
 	users := []store.User{
 		{ID: "alice0001", Email: "a@x", PasswordHash: "$2a", BranchName: "u/a", WorktreePath: "/wt",
 			ContainerName: "homa-user-a", NousPort: 40000, PreviewPort: 40001, PreviewServePort: 10001,
-			NousSessionID: "sa", CodeServerServePort: 20001, CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1},
+			NousSessionID: "sa", CodeServerServePort: 20001, CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1, Approved: true},
 		{ID: "bob00002", Email: "b@x", PasswordHash: "$2a", BranchName: "u/b", WorktreePath: "/wt",
 			ContainerName: "homa-user-b", NousPort: 40002, PreviewPort: 40003, PreviewServePort: 10002,
-			NousSessionID: "sb", CodeServerServePort: 20002, CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1},
+			NousSessionID: "sb", CodeServerServePort: 20002, CreatedAt: 1, LastActiveAt: 1, LastMessageAt: 1, Approved: true},
 	}
 	for _, u := range users {
 		if err := st.CreateUser(context.Background(), u); err != nil {

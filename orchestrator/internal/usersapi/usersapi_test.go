@@ -79,8 +79,7 @@ func mkUser(id, username string, createdAt int64) store.User {
 		ID: id, Email: id + "@x", PasswordHash: "$2a", Username: username,
 		BranchName: "u/" + id, WorktreePath: "/wt", ContainerName: "c-" + id,
 		NousPort: 0, PreviewPort: 0, PreviewServePort: 0, NousSessionID: "s-" + id,
-		CreatedAt: createdAt, LastActiveAt: createdAt, LastMessageAt: createdAt,
-	}
+		CreatedAt: createdAt, LastActiveAt: createdAt, LastMessageAt: createdAt, Approved: true,	}
 }
 
 func TestList_HappyPath(t *testing.T) {
