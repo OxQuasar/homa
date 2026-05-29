@@ -128,7 +128,6 @@ func TestMigrateBackfillsNousSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open after v0: %v", err)
 	}
-	defer st.Close()
 
 	u, err := st.GetUserByID(context.Background(), "legacy")
 	if err != nil {
@@ -208,7 +207,6 @@ func TestMigrateBackfillsUsernames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open after v3: %v", err)
 	}
-	defer st.Close()
 
 	a, _ := st.GetUserByID(context.Background(), "aaaaaaaa")
 	b, _ := st.GetUserByID(context.Background(), "bbbbbbbb")
@@ -260,7 +258,6 @@ func TestMigrateBackfillsLastMessageAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open after v1: %v", err)
 	}
-	defer st.Close()
 
 	u, err := st.GetUserByID(context.Background(), "a")
 	if err != nil {
@@ -535,3 +532,92 @@ func indexOf(s, sub string) int {
 
 // Smoke that the helper compiles + behaves; lets us drop strings import.
 var _ = fmt.Sprintf
+
+// TestSetApprovedNotFound — defends against typo'd CLI input that
+// would silently succeed (UPDATE matching 0 rows is "ok" by default).
+func TestSetApprovedNotFound(t *testing.T) {
+	st := freshStore(t)
+	err := st.SetApproved(context.Background(), "noexist", true)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+// TestSetApprovedFlipsAndIsIdempotent — happy path: gate flip, then
+// flipping again to the same value is still OK (idempotent on value).
+func TestSetApprovedFlipsAndIsIdempotent(t *testing.T) {
+	st := freshStore(t)
+	u := sampleUser("approver")
+	if err := st.CreateUser(context.Background(), u); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	got, _ := st.GetUserByID(context.Background(), u.ID)
+	if got.Approved {
+		t.Error("freshly-created user should be Approved=false (gate)")
+	}
+
+	if err := st.SetApproved(context.Background(), u.ID, true); err != nil {
+		t.Fatalf("first SetApproved: %v", err)
+	}
+	got, _ = st.GetUserByID(context.Background(), u.ID)
+	if !got.Approved {
+		t.Error("after SetApproved(true): still Approved=false")
+	}
+
+	// Re-applying same value is a no-op success (idempotent).
+	if err := st.SetApproved(context.Background(), u.ID, true); err != nil {
+		t.Errorf("re-approve: %v", err)
+	}
+}
+
+// TestMigrateApprovedBackfillsExistingUsers — a v6 DB (post-username,
+// pre-approval) gets the column added with backfill so existing users
+// remain logged-in-able. Without backfill, they'd be locked out.
+func TestMigrateApprovedBackfillsExistingUsers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "homa.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	// v6 schema — has all columns through application essays but NO
+	// approved column. (Modeling state of a DB created before this
+	// migration shipped.)
+	if _, err := db.Exec(`CREATE TABLE users (
+		id TEXT PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT, name TEXT,
+		username TEXT NOT NULL DEFAULT '',
+		join_reason TEXT, mystery_interest TEXT, background TEXT,
+		branch_name TEXT, worktree_path TEXT, container_name TEXT,
+		nous_port INTEGER, preview_port INTEGER, preview_serve_port INTEGER,
+		nous_session_id TEXT NOT NULL DEFAULT '',
+		created_at INTEGER, last_active_at INTEGER,
+		last_message_at INTEGER NOT NULL DEFAULT 0,
+		code_server_port INTEGER NOT NULL DEFAULT 0,
+		code_server_serve_port INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatalf("create v6 users: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, email, password_hash, name, username,
+		branch_name, worktree_path, container_name,
+		nous_port, preview_port, preview_serve_port,
+		nous_session_id, created_at, last_active_at)
+		VALUES ('aaaaaaaa', 'pre@x.io', '$2a', '', 'pre',
+			'u/x', '/wt', 'c', 0, 0, 0, 's', 1, 1)`); err != nil {
+		t.Fatalf("insert v6 user: %v", err)
+	}
+	db.Close()
+
+	// Re-open via Store → triggers migrate() including the approved
+	// column add + backfill.
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v6: %v", err)
+	}
+
+	u, err := st.GetUserByID(context.Background(), "aaaaaaaa")
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if !u.Approved {
+		t.Error("pre-migration user not backfilled to Approved=true (would be locked out)")
+	}
+}

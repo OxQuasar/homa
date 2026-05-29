@@ -157,14 +157,27 @@ func migrate(db *sql.DB) error {
 	}
 	// Manual-approval gate: signup creates Approved=false; operator runs
 	// `homa approve <userid>` to grant access. Existing users predating
-	// this column are auto-approved so we dont lock them out.
+	// this column are auto-approved so we don't lock them out.
+	//
+	// Transaction-wrapped so a partial failure (column added but
+	// backfill UPDATE crashes) doesn't leave existing users locked
+	// out on next start (which would see the column present and skip
+	// re-attempting the backfill).
 	if !cols["approved"] {
-		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0`); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin approved migration: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0`); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("add users.approved: %w", err)
 		}
-		// Backfill: anyone already in is approved.
-		if _, err := db.Exec(`UPDATE users SET approved = 1`); err != nil {
+		if _, err := tx.Exec(`UPDATE users SET approved = 1`); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("backfill users.approved: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit approved migration: %w", err)
 		}
 	}
 	// Partial UNIQUE index on non-empty usernames. Lives in migrate()
@@ -324,11 +337,23 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 }
 
 // SetApproved flips the approved gate. Called by `homa approve <userid>`.
-// Idempotent — setting already-approved to true is a no-op.
+// Idempotent on value — setting already-approved to true is a no-op.
+// Returns ErrNotFound when userID matches no row (defends against typo'd
+// CLI input that would otherwise silently succeed with 0 rows affected).
 func (s *Store) SetApproved(ctx context.Context, userID string, approved bool) error {
-	_, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE users SET approved = ? WHERE id = ?`, approved, userID)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UpdateLastMessage bumps last_message_at to ts. Called on:

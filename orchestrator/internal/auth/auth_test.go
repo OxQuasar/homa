@@ -289,6 +289,7 @@ func TestLoginHappyPath(t *testing.T) {
 func TestLoginWrongPassword(t *testing.T) {
 	env := newTestEnv(t)
 	env.post("/signup", map[string]string{"email": "wp@b.co", "password": "hunter22", "username": "wpuser"}).Body.Close()
+	env.approve("wp@b.co")
 	env.client.Jar, _ = cookiejar.New(nil)
 
 	resp := env.post("/login", map[string]string{"email": "wp@b.co", "password": "wrongone"})
@@ -297,6 +298,64 @@ func TestLoginWrongPassword(t *testing.T) {
 	}
 	if cookieFromResp(resp) != nil {
 		t.Error("cookie set on failed login")
+	}
+}
+
+// TestLoginPendingApproval — bcrypt-valid creds but Approved=false →
+// 403 with the operator-actionable error message. No cookie issued.
+// Regression: this gate was added later; verifies signup→login (without
+// homa approve) is properly blocked.
+func TestLoginPendingApproval(t *testing.T) {
+	env := newTestEnv(t)
+	env.post("/signup", map[string]string{
+		"email": "pending@x.io", "password": "hunter22", "username": "pending",
+	}).Body.Close()
+	// Note: NO env.approve() — leave user PENDING.
+	env.client.Jar, _ = cookiejar.New(nil)
+
+	resp := env.post("/login", map[string]string{
+		"email": "pending@x.io", "password": "hunter22",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	}
+	if cookieFromResp(resp) != nil {
+		t.Error("cookie issued despite pending approval")
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(body, []byte("pending review")) {
+		t.Errorf("body missing 'pending review': %s", body)
+	}
+}
+
+// TestApprovalUnblocksLogin — approve flips the gate, allowing the
+// previously-blocked applicant to log in. Idempotent (second login
+// after approval also works).
+func TestApprovalUnblocksLogin(t *testing.T) {
+	env := newTestEnv(t)
+	env.post("/signup", map[string]string{
+		"email": "later@x.io", "password": "hunter22", "username": "later",
+	}).Body.Close()
+	env.client.Jar, _ = cookiejar.New(nil)
+
+	// Before approve: 403.
+	r1 := env.post("/login", map[string]string{"email": "later@x.io", "password": "hunter22"})
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusForbidden {
+		t.Fatalf("pre-approve login: got %d, want 403", r1.StatusCode)
+	}
+
+	env.approve("later@x.io")
+
+	// After approve: 200 + cookie.
+	r2 := env.post("/login", map[string]string{"email": "later@x.io", "password": "hunter22"})
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusOK {
+		t.Fatalf("post-approve login: got %d, want 200", r2.StatusCode)
+	}
+	if cookieFromResp(r2) == nil {
+		t.Error("post-approve login: no cookie")
 	}
 }
 
