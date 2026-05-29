@@ -60,6 +60,12 @@
   // a successful open, any subsequent close is treated as session lost
   // and we send the user back to the public site.
   let wsWasOpen = false;
+  // tearingDown flips true the moment onDestroy starts (i.e. the user
+  // navigated away — e.g. to /admin). Suppresses the auto-logout-on-WS-
+  // close path so an intentional component unmount isn't mistaken for
+  // a lost-session event. Plain (non-reactive) variable; only read by
+  // the onStatus callback at the moment WS closes.
+  let tearingDown = false;
 
   // "Open VS Code" link. Fetched once on mount; null while loading, ''
   // when the feature is disabled (or user's ports not yet allocated).
@@ -279,8 +285,10 @@
         // compaction, container stopped, orchestrator restart, network
         // blip). Same flow as the Log out button: clear the cookie, send
         // back to main. Re-login via the public site's pill restarts
-        // cleanly with a fresh WS.
-        else if (s === 'closed' && wsWasOpen) onLogout();
+        // cleanly with a fresh WS. Suppressed when the close is from an
+        // intentional unmount (user navigated to /admin etc.) — see
+        // tearingDown set in onDestroy.
+        else if (s === 'closed' && wsWasOpen && !tearingDown) onLogout();
       },
       onEvent: handleEvent
     });
@@ -348,6 +356,9 @@
   }
 
   onDestroy(() => {
+    // Set BEFORE closing the WS so the onStatus 'closed' callback sees
+    // it and short-circuits the lost-session auto-logout.
+    tearingDown = true;
     window.removeEventListener('message', onIframeMessage);
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);
