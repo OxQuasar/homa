@@ -4,6 +4,12 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash       TEXT NOT NULL,           -- bcrypt
   name                TEXT,                    -- optional, freeform
   username            TEXT NOT NULL DEFAULT '', -- required at signup; displayed publicly (forum etc); [a-z0-9_]{3,32}
+  -- Signup application fields. Captured at /signup; operator reads via
+  -- `homa review <userid>` to inform manual approval. NULL on rows
+  -- created before this column was added.
+  join_reason         TEXT,                    -- "Why are you interested in joining the White Tower?"
+  mystery_interest    TEXT,                    -- "What mystery are you interested in investigating?"
+  background          TEXT,                    -- "What is your background?"
   branch_name         TEXT NOT NULL,           -- "user/<id>"
   worktree_path       TEXT NOT NULL,           -- absolute path on host
   container_name      TEXT NOT NULL,           -- "homa-user-<id>"

@@ -63,8 +63,27 @@ func newTestEnv(t *testing.T) *testEnv {
 	return &testEnv{t: t, srv: srv, store: st, client: client}
 }
 
+// fillerEssay is a 20+ character placeholder used to auto-populate
+// the application essay fields in tests that don't care about their
+// content. Tests that validate the fields directly pass them
+// explicitly (a present key in the body map suppresses the auto-fill).
+const fillerEssay = "placeholder essay for tests — twenty chars"
+
 func (e *testEnv) post(path string, body any) *http.Response {
 	e.t.Helper()
+	// Auto-inject application essay fields on /signup so existing
+	// happy-path tests didn't need to change for the field expansion.
+	// Negative-validation tests can override by setting an empty
+	// string (key present, value "" — auto-fill skips).
+	if path == "/signup" {
+		if m, ok := body.(map[string]string); ok {
+			for _, k := range []string{"join_reason", "mystery_interest", "background"} {
+				if _, present := m[k]; !present {
+					m[k] = fillerEssay
+				}
+			}
+		}
+	}
 	var buf bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
@@ -399,9 +418,12 @@ func TestPortAllocationDistinct(t *testing.T) {
 			c, _ := cookiejar.New(nil)
 			client := &http.Client{Jar: c, Timeout: 5 * time.Second}
 			body, _ := json.Marshal(map[string]string{
-				"email":    fmt.Sprintf("u%d@b.co", i),
-				"password": "hunter22",
-				"username": fmt.Sprintf("user_%d", i),
+				"email":            fmt.Sprintf("u%d@b.co", i),
+				"password":         "hunter22",
+				"username":         fmt.Sprintf("user_%d", i),
+				"join_reason":      fillerEssay,
+				"mystery_interest": fillerEssay,
+				"background":       fillerEssay,
 			})
 			req, _ := http.NewRequest(http.MethodPost, env.srv.URL+"/signup", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -502,6 +524,13 @@ func TestSignupDuplicateEmailDoesNotInvokeProvisioner(t *testing.T) {
 	client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
 
 	post := func(body any) *http.Response {
+		if m, ok := body.(map[string]string); ok {
+			for _, k := range []string{"join_reason", "mystery_interest", "background"} {
+				if _, present := m[k]; !present {
+					m[k] = fillerEssay
+				}
+			}
+		}
 		var buf bytes.Buffer
 		json.NewEncoder(&buf).Encode(body)
 		resp, err := client.Post(srv.URL+"/signup", "application/json", &buf)
@@ -575,6 +604,15 @@ func TestLoginEnsuresSandbox(t *testing.T) {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
 	post := func(path string, body any) *http.Response {
+		if path == "/signup" {
+			if m, ok := body.(map[string]string); ok {
+				for _, k := range []string{"join_reason", "mystery_interest", "background"} {
+					if _, present := m[k]; !present {
+						m[k] = fillerEssay
+					}
+				}
+			}
+		}
 		var buf bytes.Buffer
 		json.NewEncoder(&buf).Encode(body)
 		resp, err := client.Post(srv.URL+path, "application/json", &buf)
@@ -665,6 +703,15 @@ func TestLoginBumpsActiveBeforeEnsure(t *testing.T) {
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
 	postJSON := func(path string, body any) *http.Response {
+		if path == "/signup" {
+			if m, ok := body.(map[string]string); ok {
+				for _, k := range []string{"join_reason", "mystery_interest", "background"} {
+					if _, present := m[k]; !present {
+						m[k] = fillerEssay
+					}
+				}
+			}
+		}
 		var buf bytes.Buffer
 		json.NewEncoder(&buf).Encode(body)
 		resp, err := client.Post(srv.URL+path, "application/json", &buf)

@@ -37,8 +37,23 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return JSON.parse(text) as T;
 }
 
-export function signup(email: string, password: string, username: string, name?: string) {
-  return call<{ user_id: string }>('POST', '/signup', { email, password, username, name });
+export interface SignupApplication {
+  join_reason: string;
+  mystery_interest: string;
+  background: string;
+}
+
+export function signup(
+  email: string,
+  password: string,
+  username: string,
+  app: SignupApplication,
+  name?: string,
+) {
+  return call<{ user_id: string }>('POST', '/signup', {
+    email, password, username, name,
+    ...app,
+  });
 }
 
 export function login(email: string, password: string) {

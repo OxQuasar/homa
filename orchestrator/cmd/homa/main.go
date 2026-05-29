@@ -615,7 +615,37 @@ func runReview(args []string, log *slog.Logger) error {
 	}
 	fmt.Printf("diff:    git -C %s diff main..user/%s\n", siteDir, u.ID)
 	fmt.Printf("merge:   ./homa merge %s\n", u.ID)
+
+	// Application essay fields surfaced for the manual-approval
+	// decision. Empty on rows that predate the form expansion (NULL
+	// in DB → empty string after scan); silently omit those.
+	if u.JoinReason != "" || u.MysteryInterest != "" || u.Background != "" {
+		fmt.Println()
+		fmt.Println("application:")
+		if u.JoinReason != "" {
+			fmt.Println("  ─ Why joining the White Tower ─")
+			fmt.Println(indent(u.JoinReason, "    "))
+		}
+		if u.MysteryInterest != "" {
+			fmt.Println("  ─ Mystery to investigate ─")
+			fmt.Println(indent(u.MysteryInterest, "    "))
+		}
+		if u.Background != "" {
+			fmt.Println("  ─ Background ─")
+			fmt.Println(indent(u.Background, "    "))
+		}
+	}
 	return nil
+}
+
+// indent prefixes every line of s with prefix. Used for pretty-printing
+// multi-paragraph application essays in `homa review`.
+func indent(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // runReload implements `homa reload <userid>`: podman-stops the user's

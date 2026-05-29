@@ -112,6 +112,9 @@ func (r *testRig) signup(email, password string) string {
 	body, _ := json.Marshal(map[string]string{
 		"email": email, "password": password,
 		"username": store.DeriveUsername(email),
+		"join_reason": "test filler — twenty chars min length",
+		"mystery_interest": "test filler — twenty chars min length",
+		"background": "test filler — twenty chars min length",
 	})
 	resp, err := r.client.Post(r.orchSrv.URL+"/signup", "application/json", bytes.NewReader(body))
 	if err != nil {

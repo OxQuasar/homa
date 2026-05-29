@@ -32,6 +32,12 @@ type User struct {
 	PasswordHash        string
 	Name                string // optional, freeform
 	Username            string // required at signup; displayed publicly (forum, etc); [a-z0-9_]{3,32}
+	// Application fields captured at signup; operator reads via `homa
+	// review <userid>` to inform manual approval. Empty on rows that
+	// existed before this field was added.
+	JoinReason          string // "Why are you interested in joining the White Tower?"
+	MysteryInterest     string // "What mystery are you interested in investigating?"
+	Background          string // "What is your background?"
 	BranchName          string
 	WorktreePath        string
 	ContainerName       string
@@ -132,6 +138,16 @@ func migrate(db *sql.DB) error {
 		}
 		if err := backfillUsernames(db); err != nil {
 			return fmt.Errorf("backfill users.username: %w", err)
+		}
+	}
+	// Signup application fields (added when expanding the signup form
+	// with intent / mystery interest / background). NULL on pre-existing
+	// rows — they predate the application flow.
+	for _, col := range []string{"join_reason", "mystery_interest", "background"} {
+		if !cols[col] {
+			if _, err := db.Exec(`ALTER TABLE users ADD COLUMN ` + col + ` TEXT`); err != nil {
+				return fmt.Errorf("add users.%s: %w", col, err)
+			}
 		}
 	}
 	// Partial UNIQUE index on non-empty usernames. Lives in migrate()
@@ -270,13 +286,15 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (
 			id, email, password_hash, name, username,
+			join_reason, mystery_interest, background,
 			branch_name, worktree_path, container_name,
 			nous_port, preview_port, preview_serve_port,
 			nous_session_id,
 			code_server_port, code_server_serve_port,
 			created_at, last_active_at, last_message_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Email, u.PasswordHash, u.Name, u.Username,
+		u.JoinReason, u.MysteryInterest, u.Background,
 		u.BranchName, u.WorktreePath, u.ContainerName,
 		u.NousPort, u.PreviewPort, u.PreviewServePort,
 		u.NousSessionID,
@@ -471,6 +489,7 @@ func IsAnyUniqueViolation(err error) bool {
 
 // userSelect is the column list used by both GetUserBy* helpers.
 const userSelect = `SELECT id, email, password_hash, name, username,
+	join_reason, mystery_interest, background,
 	branch_name, worktree_path, container_name,
 	nous_port, preview_port, preview_serve_port,
 	nous_session_id,
@@ -479,9 +498,10 @@ const userSelect = `SELECT id, email, password_hash, name, username,
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	var u User
-	var name sql.NullString
+	var name, joinReason, mysteryInterest, background sql.NullString
 	err := row.Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &name, &u.Username,
+		&joinReason, &mysteryInterest, &background,
 		&u.BranchName, &u.WorktreePath, &u.ContainerName,
 		&u.NousPort, &u.PreviewPort, &u.PreviewServePort,
 		&u.NousSessionID,
@@ -495,5 +515,8 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 		return nil, err
 	}
 	u.Name = name.String
+	u.JoinReason = joinReason.String
+	u.MysteryInterest = mysteryInterest.String
+	u.Background = background.String
 	return &u, nil
 }

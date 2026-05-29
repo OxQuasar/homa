@@ -46,6 +46,13 @@ const (
 	// loading screen shows the user *something is happening* during
 	// this window.
 	ensureRunningBgTimeout = 3 * time.Minute
+
+	// applicationMinChars / applicationMaxChars bound each of the three
+	// signup application essay fields. Min keeps the operator from
+	// being flooded with "asdf" submissions; max keeps the DB row
+	// reasonable.
+	applicationMinChars = 20
+	applicationMaxChars = 4000
 )
 
 // friendlyFailureMessage maps an EnsureRunning error to a user-facing
@@ -144,6 +151,11 @@ type signupReq struct {
 	Password string `json:"password"`
 	Name     string `json:"name"`
 	Username string `json:"username"`
+	// Application essay fields — operator reads via `homa review <userid>`
+	// to inform manual approval. All three required.
+	JoinReason      string `json:"join_reason"`
+	MysteryInterest string `json:"mystery_interest"`
+	Background      string `json:"background"`
 }
 
 type loginReq struct {
@@ -187,6 +199,29 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest,
 			"username must be 3-32 chars, lowercase a-z / 0-9 / underscore")
 		return
+	}
+	// Application fields. Required + minimum length so operators
+	// receive thoughtful answers; cap to a sane length to avoid spam.
+	req.JoinReason = strings.TrimSpace(req.JoinReason)
+	req.MysteryInterest = strings.TrimSpace(req.MysteryInterest)
+	req.Background = strings.TrimSpace(req.Background)
+	for _, f := range []struct {
+		name, val string
+	}{
+		{"join_reason", req.JoinReason},
+		{"mystery_interest", req.MysteryInterest},
+		{"background", req.Background},
+	} {
+		if l := len(f.val); l < applicationMinChars {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("%s must be at least %d characters (got %d)", f.name, applicationMinChars, l))
+			return
+		}
+		if len(f.val) > applicationMaxChars {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("%s must be at most %d characters", f.name, applicationMaxChars))
+			return
+		}
 	}
 
 	// Email-uniqueness precheck. The DB UNIQUE constraint is still the source
@@ -248,6 +283,9 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		PasswordHash:     string(hash),
 		Name:             req.Name,
 		Username:         req.Username,
+		JoinReason:       req.JoinReason,
+		MysteryInterest:  req.MysteryInterest,
+		Background:       req.Background,
 		BranchName:       prov.BranchName,
 		WorktreePath:     prov.WorktreePath,
 		ContainerName:    prov.ContainerName,
