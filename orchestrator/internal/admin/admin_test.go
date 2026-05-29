@@ -242,6 +242,42 @@ func TestReject_RevokesActiveSessions(t *testing.T) {
 	}
 }
 
+// TestSelfRejectIsBlocked — admin can't reject themselves via the API.
+// Without this guard, an admin who curls the reject endpoint at their
+// own user_id would nuke their own session + lose access to /api/admin
+// (RequireAuth's gate check fires on next request). Recovery would
+// require direct SQL — bad UX for an accidental misclick.
+// Approve-self stays allowed (idempotent, no harm).
+func TestSelfRejectIsBlocked(t *testing.T) {
+	r := newRig(t)
+	// adminxxx tries to reject themselves.
+	resp := r.do(t, "POST", "/api/admin/users/adminxxx/reject", "adminxxx", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("self-reject: got %d, want 400", resp.StatusCode)
+	}
+	// And admin is still admin in the DB.
+	got, _ := r.store.GetUserByID(context.Background(), "adminxxx")
+	if got.Rejected {
+		t.Error("admin rejected anyway (guard failed)")
+	}
+	if !got.Approved || !got.IsAdmin {
+		t.Errorf("admin state corrupted: approved=%v isAdmin=%v", got.Approved, got.IsAdmin)
+	}
+}
+
+// TestSelfApproveIsAllowed — flip side: admin can approve themselves
+// (no-op since already approved). Not gated. Sanity that the self-check
+// is scoped to reject, not all actions.
+func TestSelfApproveIsAllowed(t *testing.T) {
+	r := newRig(t)
+	resp := r.do(t, "POST", "/api/admin/users/adminxxx/approve", "adminxxx", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("self-approve: got %d, want 200", resp.StatusCode)
+	}
+}
+
 // TestRequireAuth_GatesOnRejected — even if web_session somehow stays
 // (admin reject path failed mid-flight, or external revocation
 // scenario), RequireAuth still locks out the user on every request

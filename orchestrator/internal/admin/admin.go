@@ -149,6 +149,14 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, action strin
 		writeError(w, http.StatusBadRequest, "missing user id")
 		return
 	}
+	// Defense against admin self-lockout. The UI already hides the
+	// Reject button on admin rows, but the API was curl-able. A
+	// rejected admin would lose access to /api/admin/* and need SQL
+	// surgery to recover. Approve-self is fine (idempotent).
+	if action == "reject" && targetID == actor.ID {
+		writeError(w, http.StatusBadRequest, "cannot reject yourself")
+		return
+	}
 	ctx := r.Context()
 	var err error
 	switch action {
