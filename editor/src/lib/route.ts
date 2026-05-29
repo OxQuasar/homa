@@ -7,12 +7,13 @@
 // the orchestrator's path-based 302s render the right component.
 // Anything we don't recognise falls through to 'login'.
 
-export type Route = 'signup' | 'login' | 'editor';
+export type Route = 'signup' | 'login' | 'editor' | 'admin';
 
 const ROUTES: Record<string, Route> = {
   '/signup': 'signup',
   '/login': 'login',
-  '/editor': 'editor'
+  '/editor': 'editor',
+  '/admin': 'admin'
 };
 
 export function parseRoute(pathname: string, hash: string): Route {

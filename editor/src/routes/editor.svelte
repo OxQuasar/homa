@@ -47,6 +47,8 @@
   });
 
   let userEmail = $state('');
+  // is_admin from /me. Drives the admin-link visibility in the header.
+  let isAdmin = $state(false);
   let ws: Session | null = null;
   let wsStatus = $state<'connecting' | 'open' | 'closed'>('connecting');
   let workDir = $state('/workspace');
@@ -249,6 +251,7 @@
     try {
       const m = await me();
       userEmail = m.email;
+      isAdmin = !!m.is_admin;
       selfUserId = m.user_id || '';
       session.previewUrl = m.preview_url || '';
       sessionId = m.nous_session_id || '';
@@ -733,6 +736,9 @@
           title="Open this sandbox in a full VS Code (browser)"
         >Open VS Code</a>
       {/if}
+      {#if isAdmin}
+        <a class="admin-link" href="#/admin" title="Application review">Admin</a>
+      {/if}
       <button onclick={onLogout}>Log out</button>
     </div>
   </header>
@@ -931,6 +937,20 @@
     white-space: nowrap;
   }
   .vscode-link:hover { background: #e6f0ff; }
+
+  /* Admin link — visible only when m.is_admin. Mirrors vscode-link
+     shape with admin-blue palette so they read as the same kind of nav. */
+  .admin-link {
+    padding: 0.25rem 0.6rem;
+    border: 1px solid #555;
+    background: #2a2a3a;
+    color: #fafafa;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .admin-link:hover { background: #404055; }
 
   /* Three-column grid: chat (user-resized) | splitter (6px) | preview (rest). */
   main {

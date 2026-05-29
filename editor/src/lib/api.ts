@@ -5,6 +5,7 @@ export interface MeResponse {
   user_id: string;
   email: string;
   username: string;
+  is_admin: boolean;
   preview_url: string;
   // Pinned nous session id; forwarded to the sandbox in the WS Hello so
   // every connect attaches to the same session.
@@ -114,4 +115,31 @@ export async function upload(file: File): Promise<UploadResponse> {
     throw err;
   }
   return JSON.parse(text) as UploadResponse;
+}
+
+// --- Admin (admin-only — RequireAdmin gates these on the backend) ---
+
+export interface AdminUserRow {
+  user_id: string;
+  email: string;
+  username: string;
+  name?: string;
+  join_reason: string;
+  mystery_interest: string;
+  background: string;
+  created_at: number;
+  status: 'pending' | 'approved' | 'rejected';
+  is_admin: boolean;
+}
+
+export function adminListUsers(): Promise<AdminUserRow[]> {
+  return call('GET', '/api/admin/users');
+}
+
+export function adminApprove(userId: string): Promise<AdminUserRow> {
+  return call('POST', `/api/admin/users/${encodeURIComponent(userId)}/approve`);
+}
+
+export function adminReject(userId: string): Promise<AdminUserRow> {
+  return call('POST', `/api/admin/users/${encodeURIComponent(userId)}/reject`);
 }

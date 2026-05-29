@@ -178,6 +178,7 @@ type meResp struct {
 	UserID        string `json:"user_id"`
 	Email         string `json:"email"`
 	Username      string `json:"username"`
+	IsAdmin       bool   `json:"is_admin"`
 	PreviewURL    string `json:"preview_url"`
 	NousSessionID string `json:"nous_session_id"`
 }
@@ -351,9 +352,16 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	// Approval gate: password valid but operator hasn't approved the
-	// application yet. 403 distinguishes "your credentials are right
-	// but you aren't allowed in" from "your credentials are wrong" (401).
+	// Application gate. Three states:
+	//   approved=1, rejected=0  → login allowed
+	//   approved=0, rejected=1  → rejected (terminal; different message)
+	//   approved=0, rejected=0  → pending review
+	// Rejected check first so flipping rejected from approved produces
+	// the rejected message rather than pending.
+	if u.Rejected {
+		writeError(w, http.StatusForbidden, "your application was not accepted")
+		return
+	}
 	if !u.Approved {
 		writeError(w, http.StatusForbidden, "your application is pending review")
 		return
@@ -433,6 +441,7 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 		UserID:        u.ID,
 		Email:         u.Email,
 		Username:      u.Username,
+		IsAdmin:       u.IsAdmin,
 		PreviewURL:    s.previewURLFor(u),
 		NousSessionID: u.NousSessionID,
 	})

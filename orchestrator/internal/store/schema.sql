@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS users (
   last_message_at     INTEGER NOT NULL DEFAULT 0, -- bumped on user `run` requests / login; drives idle-compact lifecycle
   code_server_port    INTEGER NOT NULL DEFAULT 0, -- host port → sandbox :8443 (code-server)
   code_server_serve_port INTEGER NOT NULL DEFAULT 0, -- tailscale-serve HTTPS port for browser code-server access
-  approved            INTEGER NOT NULL DEFAULT 0  -- 0 = application pending; 1 = approved by operator (homa approve)
+  approved            INTEGER NOT NULL DEFAULT 0, -- 0 = application pending; 1 = approved by operator (homa approve)
+  rejected            INTEGER NOT NULL DEFAULT 0, -- 0 = not rejected; 1 = application rejected via /api/admin (login refused)
+  is_admin            INTEGER NOT NULL DEFAULT 0  -- 0 = regular user; 1 = admin (can access /api/admin/* + admin UI). Set via `homa promote`.
 );
 
 CREATE TABLE IF NOT EXISTS web_sessions (

@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/skipper/homa/orchestrator/internal/admin"
 	"github.com/skipper/homa/orchestrator/internal/auth"
 	"github.com/skipper/homa/orchestrator/internal/codeserver"
 	"github.com/skipper/homa/orchestrator/internal/codeurl"
@@ -92,6 +93,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "promote":
+			if err := runPromote(os.Args[2:], log); err != nil {
+				log.Error("promote failed", "err", err)
+				os.Exit(1)
+			}
+			return
 		case "pr":
 			if err := runPR(os.Args[2:], log); err != nil {
 				log.Error("pr failed", "err", err)
@@ -120,6 +127,7 @@ const usageText = `usage:
   homa review <userid>           print review URLs (preview + vscode) + diff/merge commands
   homa reload <userid>           stop user's container — next login respawns with current config
   homa approve <userid>          grant access to a pending application (after homa review reads their essays)
+  homa promote <userid>          make user an admin (access /api/admin/* + the editor admin page)
 
   homa pr list                   list all pr/<userid>/<topic> branches with stats vs main
   homa pr show [<branch>]        diff + commits for a PR branch (no arg = single open PR)
@@ -246,6 +254,10 @@ func run(configPath string, log *slog.Logger) error {
 	// /api/library/* (auth-required). Same dir is bind-mounted RO
 	// into user containers at /library so the LLM has read access.
 	library.New(cfg.LibraryDir, log).Register(mux, authSvc, corsPolicy.Middleware)
+
+	// Admin endpoints — admin-only (RequireAdmin). Lets admins view
+	// applications + approve / reject from the editor's /admin route.
+	admin.New(st, log).Register(mux, authSvc, corsPolicy.Middleware)
 	spaIndex, err := static.Register(mux, log)
 	if err != nil {
 		return fmt.Errorf("static.Register: %w", err)
@@ -563,7 +575,12 @@ func runList(args []string, log *slog.Logger) error {
 			continue
 		}
 		gate := "OK"
-		if !u.Approved {
+		switch {
+		case u.IsAdmin:
+			gate = "ADMIN"
+		case u.Rejected:
+			gate = "REJECT"
+		case !u.Approved:
 			gate = "PENDING"
 		}
 		fmt.Printf("%-8s %s | %s\n", gate, u.Email, u.ID)
@@ -605,6 +622,43 @@ func runApprove(args []string, log *slog.Logger) error {
 	}
 	log.Info("approved", "user_id", userID, "email", u.Email)
 	fmt.Printf("approved: %s (%s)\n", u.Email, u.ID)
+	return nil
+}
+
+// runPromote implements `homa promote <userid>`: flips users.is_admin
+// to 1. Bootstrap path for the admin role — the admin UI deliberately
+// does NOT expose admin-granting, so this CLI is the only way to create
+// the first (or any) admin. Idempotent.
+func runPromote(args []string, log *slog.Logger) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: homa promote <userid>")
+	}
+	userID := args[0]
+	if !userIDPattern.MatchString(userID) {
+		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
+	}
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+	u, err := st.GetUserByID(context.Background(), userID)
+	if err != nil {
+		return fmt.Errorf("get user %s: %w", userID, err)
+	}
+	if u.IsAdmin {
+		fmt.Printf("already admin: %s (%s)\n", u.Email, u.ID)
+		return nil
+	}
+	if err := st.SetAdmin(context.Background(), userID, true); err != nil {
+		return fmt.Errorf("promote: %w", err)
+	}
+	log.Info("promoted", "user_id", userID, "email", u.Email)
+	fmt.Printf("promoted: %s (%s) is now an admin\n", u.Email, u.ID)
 	return nil
 }
 

@@ -55,6 +55,14 @@ type User struct {
 	// with 403 while Approved=false. Existing users predating this column
 	// get backfilled to true (theyre already in).
 	Approved bool
+	// Rejected: operator (admin) marks an application rejected via the
+	// admin UI. Login refuses with a different 403 message than pending.
+	// Pre-existing rows are not rejected (default false).
+	Rejected bool
+	// IsAdmin: regular user vs admin. Admins can access /api/admin/*
+	// endpoints + see the admin UI. Set via `homa promote <userid>`;
+	// can NOT be set via signup (operator-controlled).
+	IsAdmin bool
 }
 
 // WebSession represents a single browser session token.
@@ -178,6 +186,19 @@ func migrate(db *sql.DB) error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit approved migration: %w", err)
+		}
+	}
+	// Rejected + is_admin: both default to 0 for existing rows, which is
+	// the desired backfill (nobody pre-existing is admin or rejected).
+	// No transaction needed — pure ALTER, no backfill UPDATE.
+	if !cols["rejected"] {
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add users.rejected: %w", err)
+		}
+	}
+	if !cols["is_admin"] {
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add users.is_admin: %w", err)
 		}
 	}
 	// Partial UNIQUE index on non-empty usernames. Lives in migrate()
@@ -322,8 +343,8 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 			nous_session_id,
 			code_server_port, code_server_serve_port,
 			created_at, last_active_at, last_message_at,
-			approved
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			approved, rejected, is_admin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Email, u.PasswordHash, u.Name, u.Username,
 		u.JoinReason, u.MysteryInterest, u.Background,
 		u.BranchName, u.WorktreePath, u.ContainerName,
@@ -331,18 +352,44 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 		u.NousSessionID,
 		u.CodeServerPort, u.CodeServerServePort,
 		u.CreatedAt, u.LastActiveAt, u.LastMessageAt,
-		u.Approved,
+		u.Approved, u.Rejected, u.IsAdmin,
 	)
 	return err
 }
 
-// SetApproved flips the approved gate. Called by `homa approve <userid>`.
-// Idempotent on value — setting already-approved to true is a no-op.
-// Returns ErrNotFound when userID matches no row (defends against typo'd
-// CLI input that would otherwise silently succeed with 0 rows affected).
+// SetApproved flips the approved gate. Called by `homa approve <userid>`
+// and admin API. Approving auto-clears rejected (operator changed mind).
+// Idempotent on value. ErrNotFound when userID matches no row.
 func (s *Store) SetApproved(ctx context.Context, userID string, approved bool) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE users SET approved = ? WHERE id = ?`, approved, userID)
+		`UPDATE users SET approved = ?, rejected = CASE WHEN ? = 1 THEN 0 ELSE rejected END WHERE id = ?`,
+		approved, approved, userID)
+	return rowsAffectedErr(res, err)
+}
+
+// SetRejected marks a pending application as rejected. Auto-clears
+// approved if it was somehow set (defensive — shouldn't happen via UI
+// since approved users aren't reject-able, but enforces the invariant
+// at the data layer). Idempotent on value. ErrNotFound on missing user.
+func (s *Store) SetRejected(ctx context.Context, userID string, rejected bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE users SET rejected = ?, approved = CASE WHEN ? = 1 THEN 0 ELSE approved END WHERE id = ?`,
+		rejected, rejected, userID)
+	return rowsAffectedErr(res, err)
+}
+
+// SetAdmin flips the is_admin flag. Operator-only path: `homa promote`.
+// No UI endpoint exposes this (intentional — bootstrap is CLI-only).
+// Idempotent on value. ErrNotFound on missing user.
+func (s *Store) SetAdmin(ctx context.Context, userID string, admin bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE users SET is_admin = ? WHERE id = ?`, admin, userID)
+	return rowsAffectedErr(res, err)
+}
+
+// rowsAffectedErr collapses the three-step "exec → check rows → translate
+// zero to ErrNotFound" pattern used by every SetX above.
+func rowsAffectedErr(res sql.Result, err error) error {
 	if err != nil {
 		return err
 	}
@@ -547,7 +594,7 @@ const userSelect = `SELECT id, email, password_hash, name, username,
 	nous_session_id,
 	code_server_port, code_server_serve_port,
 	created_at, last_active_at, last_message_at,
-	approved FROM users`
+	approved, rejected, is_admin FROM users`
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	var u User
@@ -560,7 +607,7 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 		&u.NousSessionID,
 		&u.CodeServerPort, &u.CodeServerServePort,
 		&u.CreatedAt, &u.LastActiveAt, &u.LastMessageAt,
-		&u.Approved,
+		&u.Approved, &u.Rejected, &u.IsAdmin,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

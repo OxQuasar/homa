@@ -93,3 +93,21 @@ func UserFromContext(ctx context.Context) (*store.User, bool) {
 	u, ok := ctx.Value(userCtxKey).(*store.User)
 	return u, ok
 }
+
+// RequireAdmin chains RequireAuth + an IsAdmin check. Non-admins get
+// 403 (not 401) — they're authenticated, just not authorized. Mounted
+// in front of every /api/admin/* route.
+func (s *Service) RequireAdmin(next http.Handler) http.Handler {
+	return s.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, ok := UserFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "not authenticated")
+			return
+		}
+		if !u.IsAdmin {
+			writeError(w, http.StatusForbidden, "admin only")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
