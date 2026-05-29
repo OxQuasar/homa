@@ -50,7 +50,7 @@ export function signup(
   app: SignupApplication,
   name?: string,
 ) {
-  return call<{ user_id: string }>('POST', '/signup', {
+  return call<{ user_id: string; pending: boolean }>('POST', '/signup', {
     email, password, username, name,
     ...app,
   });

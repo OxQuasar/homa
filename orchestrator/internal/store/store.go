@@ -50,6 +50,11 @@ type User struct {
 	CreatedAt           int64  // unix seconds UTC
 	LastActiveAt        int64  // bumped by WS keepalive (proxy ticker)
 	LastMessageAt       int64  // bumped only on user `run` requests / login; drives idle-compact lifecycle
+	// Approved gate: signup creates Approved=false (application pending);
+	// operator runs `homa approve <userid>` to flip it true. Login refuses
+	// with 403 while Approved=false. Existing users predating this column
+	// get backfilled to true (theyre already in).
+	Approved bool
 }
 
 // WebSession represents a single browser session token.
@@ -148,6 +153,18 @@ func migrate(db *sql.DB) error {
 			if _, err := db.Exec(`ALTER TABLE users ADD COLUMN ` + col + ` TEXT`); err != nil {
 				return fmt.Errorf("add users.%s: %w", col, err)
 			}
+		}
+	}
+	// Manual-approval gate: signup creates Approved=false; operator runs
+	// `homa approve <userid>` to grant access. Existing users predating
+	// this column are auto-approved so we dont lock them out.
+	if !cols["approved"] {
+		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add users.approved: %w", err)
+		}
+		// Backfill: anyone already in is approved.
+		if _, err := db.Exec(`UPDATE users SET approved = 1`); err != nil {
+			return fmt.Errorf("backfill users.approved: %w", err)
 		}
 	}
 	// Partial UNIQUE index on non-empty usernames. Lives in migrate()
@@ -291,8 +308,9 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 			nous_port, preview_port, preview_serve_port,
 			nous_session_id,
 			code_server_port, code_server_serve_port,
-			created_at, last_active_at, last_message_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, last_active_at, last_message_at,
+			approved
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.Email, u.PasswordHash, u.Name, u.Username,
 		u.JoinReason, u.MysteryInterest, u.Background,
 		u.BranchName, u.WorktreePath, u.ContainerName,
@@ -300,7 +318,16 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 		u.NousSessionID,
 		u.CodeServerPort, u.CodeServerServePort,
 		u.CreatedAt, u.LastActiveAt, u.LastMessageAt,
+		u.Approved,
 	)
+	return err
+}
+
+// SetApproved flips the approved gate. Called by `homa approve <userid>`.
+// Idempotent — setting already-approved to true is a no-op.
+func (s *Store) SetApproved(ctx context.Context, userID string, approved bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET approved = ? WHERE id = ?`, approved, userID)
 	return err
 }
 
@@ -494,7 +521,8 @@ const userSelect = `SELECT id, email, password_hash, name, username,
 	nous_port, preview_port, preview_serve_port,
 	nous_session_id,
 	code_server_port, code_server_serve_port,
-	created_at, last_active_at, last_message_at FROM users`
+	created_at, last_active_at, last_message_at,
+	approved FROM users`
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	var u User
@@ -507,6 +535,7 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 		&u.NousSessionID,
 		&u.CodeServerPort, &u.CodeServerServePort,
 		&u.CreatedAt, &u.LastActiveAt, &u.LastMessageAt,
+		&u.Approved,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

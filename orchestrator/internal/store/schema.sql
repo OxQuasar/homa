@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS users (
   last_active_at      INTEGER NOT NULL,        -- bumped by WS keepalive (proxy ticker)
   last_message_at     INTEGER NOT NULL DEFAULT 0, -- bumped on user `run` requests / login; drives idle-compact lifecycle
   code_server_port    INTEGER NOT NULL DEFAULT 0, -- host port → sandbox :8443 (code-server)
-  code_server_serve_port INTEGER NOT NULL DEFAULT 0  -- tailscale-serve HTTPS port for browser code-server access
+  code_server_serve_port INTEGER NOT NULL DEFAULT 0, -- tailscale-serve HTTPS port for browser code-server access
+  approved            INTEGER NOT NULL DEFAULT 0  -- 0 = application pending; 1 = approved by operator (homa approve)
 );
 
 CREATE TABLE IF NOT EXISTS web_sessions (

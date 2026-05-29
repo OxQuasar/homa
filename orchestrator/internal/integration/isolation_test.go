@@ -128,13 +128,32 @@ func (r *rig) signup(client *http.Client, email, password string) (string, strin
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		r.t.Fatalf("decode signup %s: %v", email, err)
 	}
+	// Signup no longer issues a cookie (pending-approval gate). Approve
+	// directly in the store, then log in to obtain a fresh cookie.
+	st, err := store.Open(r.dbPath)
+	if err != nil {
+		r.t.Fatalf("open store for approve: %v", err)
+	}
+	defer st.Close()
+	if err := st.SetApproved(context.Background(), got.UserID, true); err != nil {
+		r.t.Fatalf("approve %s: %v", got.UserID, err)
+	}
+	loginBody, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	lr, err := client.Post(r.orchSrv.URL+"/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		r.t.Fatalf("login %s: %v", email, err)
+	}
+	lr.Body.Close()
+	if lr.StatusCode != http.StatusOK {
+		r.t.Fatalf("login %s: %d", email, lr.StatusCode)
+	}
 	u, _ := url.Parse(r.orchSrv.URL)
 	for _, c := range client.Jar.Cookies(u) {
 		if c.Name == auth.CookieName {
 			return c.Value, got.UserID
 		}
 	}
-	r.t.Fatalf("signup %s: no homa_session cookie", email)
+	r.t.Fatalf("signup→approve→login %s: no homa_session cookie", email)
 	return "", ""
 }
 

@@ -167,16 +167,13 @@ func TestExistingPostRoutesUnchanged(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("POST /signup status: got %d, want 200", resp.StatusCode)
 	}
-	// And the cookie was issued.
+	// Signup no longer issues a cookie — pending-approval gate. Just
+	// confirm the route still routes JSON-to-JSON correctly by checking
+	// no cookie sneaked in (sanity for the gate).
 	u, _ := url.Parse(srv.URL)
-	cookies := client.Jar.Cookies(u)
-	found := false
-	for _, c := range cookies {
+	for _, c := range client.Jar.Cookies(u) {
 		if c.Name == auth.CookieName {
-			found = true
+			t.Errorf("homa_session cookie present after signup; gate violation")
 		}
-	}
-	if !found {
-		t.Error("homa_session cookie missing after signup")
 	}
 }

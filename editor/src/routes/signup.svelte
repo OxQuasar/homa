@@ -12,6 +12,10 @@
   let background = $state('');
   let error = $state<string | null>(null);
   let submitting = $state(false);
+  // After successful submit, swap from form to the pending-approval
+  // confirmation screen. Cookie was NOT set — the operator must run
+  // `homa approve <userid>` before this user can log in.
+  let submittedPending = $state(false);
 
   // Strict ASCII pattern mirroring orchestrator's usernamePattern. Browser
   // `pattern` attribute gives instant feedback before submit; server still
@@ -24,7 +28,7 @@
     error = null;
     submitting = true;
     try {
-      await signup(
+      const r = await signup(
         email,
         password,
         username,
@@ -35,7 +39,15 @@
         },
         name || undefined,
       );
-      window.location.hash = '#/editor';
+      // Pending-approval gate: no cookie, no redirect. Show the
+      // confirmation screen instead. `r.pending` is always true under
+      // the current flow; future direct-approve operator paths could
+      // flip it false and route to /editor.
+      if (r.pending) {
+        submittedPending = true;
+      } else {
+        window.location.hash = '#/editor';
+      }
     } catch (err) {
       error = (err as Error).message;
     } finally {
@@ -45,6 +57,19 @@
 </script>
 
 <div class="auth-page">
+  {#if submittedPending}
+    <div class="card pending">
+      <h1>Application submitted</h1>
+      <p>
+        Your application is under review. You'll be granted access once an
+        operator has read your essays.
+      </p>
+      <p class="muted">
+        Try <a href="#/login">logging in</a> later to see if you've been
+        approved. Until then, login will tell you the application is pending.
+      </p>
+    </div>
+  {:else}
   <form class="card" onsubmit={onSubmit}>
     <h1>Apply to the White Tower</h1>
     <p class="intro">
@@ -112,6 +137,7 @@
     <button type="submit" disabled={submitting}>{submitting ? '…' : 'Submit application'}</button>
     <p>Have an account? <a href="#/login">Log in</a></p>
   </form>
+  {/if}
 </div>
 
 <style>
@@ -153,4 +179,8 @@
   }
   button:disabled { background: #999; cursor: not-allowed; }
   a { color: #06f; }
+  .pending { padding: 2.5rem 2rem; text-align: center; }
+  .pending h1 { margin-bottom: 0.75rem; }
+  .pending p { color: #444; line-height: 1.45; margin: 0.5rem 0; }
+  .pending .muted { color: #777; font-size: 0.85rem; }
 </style>

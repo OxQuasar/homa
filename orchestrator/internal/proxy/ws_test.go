@@ -127,6 +127,20 @@ func (r *testRig) signup(email, password string) string {
 	}
 	var got struct{ UserID string `json:"user_id"` }
 	json.NewDecoder(resp.Body).Decode(&got)
+	// Signup no longer issues a cookie (pending-approval gate). Approve
+	// directly in the store, then log in to obtain a fresh cookie.
+	if err := r.store.SetApproved(context.Background(), got.UserID, true); err != nil {
+		r.t.Fatalf("approve %s: %v", got.UserID, err)
+	}
+	loginBody, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	lr, err := r.client.Post(r.orchSrv.URL+"/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		r.t.Fatalf("login %s: %v", email, err)
+	}
+	lr.Body.Close()
+	if lr.StatusCode != http.StatusOK {
+		r.t.Fatalf("login %s: %d", email, lr.StatusCode)
+	}
 	return got.UserID
 }
 

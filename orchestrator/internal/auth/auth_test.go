@@ -69,6 +69,21 @@ func newTestEnv(t *testing.T) *testEnv {
 // explicitly (a present key in the body map suppresses the auto-fill).
 const fillerEssay = "placeholder essay for tests — twenty chars"
 
+// approve flips the approved gate for the given email so subsequent
+// /login calls succeed. Without this, signups stay in PENDING state
+// and login returns 403. Most happy-path tests need this; tests that
+// exercise the pending-gate behavior call it conditionally.
+func (e *testEnv) approve(email string) {
+	e.t.Helper()
+	u, err := e.store.GetUserByEmail(context.Background(), email)
+	if err != nil {
+		e.t.Fatalf("approve: lookup %s: %v", email, err)
+	}
+	if err := e.store.SetApproved(context.Background(), u.ID, true); err != nil {
+		e.t.Fatalf("approve: SetApproved %s: %v", email, err)
+	}
+}
+
 func (e *testEnv) post(path string, body any) *http.Response {
 	e.t.Helper()
 	// Auto-inject application essay fields on /signup so existing
@@ -144,29 +159,22 @@ func TestSignupHappyPath(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
 	}
-	var got struct{ UserID string `json:"user_id"` }
+	var got struct {
+		UserID  string `json:"user_id"`
+		Pending bool   `json:"pending"`
+	}
 	decodeBody(t, resp, &got)
 	if got.UserID == "" {
 		t.Fatal("empty user_id")
 	}
+	if !got.Pending {
+		t.Error("expected pending=true (application gate)")
+	}
 
-	// Cookie checks
-	c := cookieFromResp(resp)
-	if c == nil {
-		t.Fatal("no homa_session cookie set")
-	}
-	if !c.HttpOnly {
-		t.Error("cookie missing HttpOnly")
-	}
-	if c.SameSite != http.SameSiteLaxMode {
-		t.Errorf("SameSite: got %v, want Lax", c.SameSite)
-	}
-	if c.Path != "/" {
-		t.Errorf("Path: got %q, want /", c.Path)
-	}
-	wantMaxAge := int((30 * 24 * time.Hour).Seconds())
-	if c.MaxAge != wantMaxAge {
-		t.Errorf("MaxAge: got %d, want %d", c.MaxAge, wantMaxAge)
+	// Signup must NOT set a cookie — account is pending approval.
+	// Operator runs `homa approve` first; the user then logs in.
+	if c := cookieFromResp(resp); c != nil {
+		t.Errorf("signup should not set cookie (pending approval); got %s", c.String())
 	}
 
 	// DB row checks
@@ -256,6 +264,8 @@ func TestLoginHappyPath(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("signup: got %d", resp.StatusCode)
 	}
+	// Approve so login passes the gate; without this we'd get 403.
+	env.approve("li@b.co")
 	// Drop cookies so login issues a fresh one
 	env.client.Jar, _ = cookiejar.New(nil)
 
@@ -295,6 +305,14 @@ func TestMeWithCookie(t *testing.T) {
 	signup := env.post("/signup", map[string]string{"email": "me@b.co", "password": "hunter22", "username": "meuser"})
 	var signupBody struct{ UserID string `json:"user_id"` }
 	decodeBody(t, signup, &signupBody)
+	// Approve + login so we have a valid cookie for the /me call (signup
+	// no longer sets one — pending-approval gate).
+	env.approve("me@b.co")
+	loginResp := env.post("/login", map[string]string{"email": "me@b.co", "password": "hunter22"})
+	loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login after approve: %d", loginResp.StatusCode)
+	}
 
 	resp := env.get("/me")
 	if resp.StatusCode != http.StatusOK {
@@ -340,6 +358,13 @@ func TestLogoutAndMeAfterLogout(t *testing.T) {
 	env := newTestEnv(t)
 	signup := env.post("/signup", map[string]string{"email": "lo@b.co", "password": "hunter22", "username": "louser"})
 	signup.Body.Close()
+	// Approve + login so we have a session to log out from.
+	env.approve("lo@b.co")
+	loginResp := env.post("/login", map[string]string{"email": "lo@b.co", "password": "hunter22"})
+	loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("login after approve: %d", loginResp.StatusCode)
+	}
 
 	// Grab the cookie value before logout (jar will be modified)
 	u, _ := url.Parse(env.srv.URL)
@@ -351,7 +376,7 @@ func TestLogoutAndMeAfterLogout(t *testing.T) {
 		}
 	}
 	if tokenBefore == "" {
-		t.Fatal("no session token after signup")
+		t.Fatal("no session token after login")
 	}
 
 	resp := env.post("/logout", nil)
@@ -631,6 +656,11 @@ func TestLoginEnsuresSandbox(t *testing.T) {
 	if spy.provisionCalls != 1 || spy.ensureRunningCalls != 0 {
 		t.Fatalf("after signup: provision=%d ensure=%d, want 1,0", spy.provisionCalls, spy.ensureRunningCalls)
 	}
+	// Approve so login passes the gate.
+	uByEmail, _ := st.GetUserByEmail(context.Background(), "le@x.io")
+	if err := st.SetApproved(context.Background(), uByEmail.ID, true); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
 
 	// Drop signup cookie so Login sees no prior auth.
 	client.Jar, _ = cookiejar.New(nil)
@@ -730,6 +760,10 @@ func TestLoginBumpsActiveBeforeEnsure(t *testing.T) {
 		t.Fatalf("get pre: %v", err)
 	}
 	signupActive := pre.LastActiveAt
+	// Approve so login passes the gate.
+	if err := st.SetApproved(context.Background(), pre.ID, true); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
 
 	// Sleep ≥1s so unix-seconds resolution can register a strictly-greater
 	// timestamp — otherwise the bump-before-Ensure check is unprovable.

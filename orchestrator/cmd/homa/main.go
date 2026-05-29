@@ -86,6 +86,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "approve":
+			if err := runApprove(os.Args[2:], log); err != nil {
+				log.Error("approve failed", "err", err)
+				os.Exit(1)
+			}
+			return
 		case "pr":
 			if err := runPR(os.Args[2:], log); err != nil {
 				log.Error("pr failed", "err", err)
@@ -113,6 +119,7 @@ const usageText = `usage:
   homa list                      print all users as 'email | userid' (sorted by created_at)
   homa review <userid>           print review URLs (preview + vscode) + diff/merge commands
   homa reload <userid>           stop user's container — next login respawns with current config
+  homa approve <userid>          grant access to a pending application (after homa review reads their essays)
 
   homa pr list                   list all pr/<userid>/<topic> branches with stats vs main
   homa pr show [<branch>]        diff + commits for a PR branch (no arg = single open PR)
@@ -555,8 +562,49 @@ func runList(args []string, log *slog.Logger) error {
 			log.Warn("list: user lookup failed", "user_id", summary.ID, "err", err)
 			continue
 		}
-		fmt.Printf("%s | %s\n", u.Email, u.ID)
+		gate := "OK"
+		if !u.Approved {
+			gate = "PENDING"
+		}
+		fmt.Printf("%-8s %s | %s\n", gate, u.Email, u.ID)
 	}
+	return nil
+}
+
+// runApprove implements `homa approve <userid>`: flips users.approved
+// to 1. Idempotent (re-approving an already-approved user is a no-op).
+// Operator typically runs this after `homa review <userid>` to inspect
+// the applicant's three essays.
+func runApprove(args []string, log *slog.Logger) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: homa approve <userid>")
+	}
+	userID := args[0]
+	if !userIDPattern.MatchString(userID) {
+		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars)", userID)
+	}
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+	u, err := st.GetUserByID(context.Background(), userID)
+	if err != nil {
+		return fmt.Errorf("get user %s: %w", userID, err)
+	}
+	if u.Approved {
+		fmt.Printf("already approved: %s (%s)\n", u.Email, u.ID)
+		return nil
+	}
+	if err := st.SetApproved(context.Background(), userID, true); err != nil {
+		return fmt.Errorf("approve: %w", err)
+	}
+	log.Info("approved", "user_id", userID, "email", u.Email)
+	fmt.Printf("approved: %s (%s)\n", u.Email, u.ID)
 	return nil
 }
 
@@ -603,6 +651,11 @@ func runReview(args []string, log *slog.Logger) error {
 
 	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
 	fmt.Printf("user:    %s (%s)\n", u.Email, u.ID)
+	if !u.Approved {
+		fmt.Printf("status:  PENDING — run `homa approve %s` to grant access\n", u.ID)
+	} else {
+		fmt.Printf("status:  approved\n")
+	}
 	if previewURL != "" {
 		fmt.Printf("preview: %s\n", previewURL)
 	} else {

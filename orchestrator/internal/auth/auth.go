@@ -167,6 +167,13 @@ type userIDResp struct {
 	UserID string `json:"user_id"`
 }
 
+// signupResp signals "application submitted; no cookie issued" to the
+// editor. Pending is always true here — signup never auto-approves.
+type signupResp struct {
+	UserID  string `json:"user_id"`
+	Pending bool   `json:"pending"`
+}
+
 type meResp struct {
 	UserID        string `json:"user_id"`
 	Email         string `json:"email"`
@@ -286,6 +293,7 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		JoinReason:       req.JoinReason,
 		MysteryInterest:  req.MysteryInterest,
 		Background:       req.Background,
+		Approved:         false, // operator runs `homa approve <userid>` to flip
 		BranchName:       prov.BranchName,
 		WorktreePath:     prov.WorktreePath,
 		ContainerName:    prov.ContainerName,
@@ -310,12 +318,12 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.issueCookie(r.Context(), w, r, userID); err != nil {
-		s.log.Error("issue cookie failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	writeJSON(w, http.StatusOK, userIDResp{UserID: userID})
+	// NO cookie at signup. Account is in pending-approval state; user
+	// must wait for the operator to run `homa approve <userid>` before
+	// they can log in. Editor sees the {pending:true} response and
+	// shows an "application submitted" page instead of redirecting
+	// to the editor.
+	writeJSON(w, http.StatusOK, signupResp{UserID: userID, Pending: true})
 }
 
 // Login verifies password, calls EnsureRunning on the user's sandbox
@@ -341,6 +349,13 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)); err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	// Approval gate: password valid but operator hasn't approved the
+	// application yet. 403 distinguishes "your credentials are right
+	// but you aren't allowed in" from "your credentials are wrong" (401).
+	if !u.Approved {
+		writeError(w, http.StatusForbidden, "your application is pending review")
 		return
 	}
 
