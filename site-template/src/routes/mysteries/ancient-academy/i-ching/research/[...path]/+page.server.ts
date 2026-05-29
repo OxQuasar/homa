@@ -103,7 +103,16 @@ async function listDir(absPath: string, urlBase: string): Promise<Entry[]> {
   return entries;
 }
 
-export const load: PageServerLoad = async ({ params }): Promise<LoadResult> => {
+export const load: PageServerLoad = async ({ params, parent }): Promise<LoadResult> => {
+  // Gate enforced server-side via the layout's auth check. Anonymous
+  // visitors get an empty listing payload (the client +layout.svelte
+  // covers the page with a GuardEncounter regardless — this just stops
+  // corpus content from leaking into the SSR HTML).
+  const { authed } = await parent();
+  if (!authed) {
+    return { kind: 'dir', path: '', segments: [], entries: [] };
+  }
+
   const rel = (params.path ?? '').replace(/\/+$/, '');
   const segments = rel ? rel.split('/') : [];
   const abs = resolveSafe(rel);

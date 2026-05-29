@@ -71,7 +71,7 @@ func newHarness(t *testing.T) *uploadHarness {
 
 	log := quietLog()
 	// Tiny size limit in tests so the 413 path is cheap to exercise.
-	authSvc := auth.New(st, nil, false, "", log)
+	authSvc := auth.New(st, nil, false, "", nil, log)
 	svc := New(branches, 1024 /* 1 KiB */, log)
 	mux := http.NewServeMux()
 	svc.Register(mux, authSvc)

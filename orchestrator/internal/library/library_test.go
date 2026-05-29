@@ -57,7 +57,7 @@ func newRig(t *testing.T, withAuth bool) *rig {
 		st.CreateWebSession(context.Background(), cookieToken, u.ID, 9_999_999_999)
 	}
 
-	authSvc := auth.New(st, nil, false, "", quietLog())
+	authSvc := auth.New(st, nil, false, "", nil, quietLog())
 	policy := cors.New(previewBase)
 	mux := http.NewServeMux()
 	library.New(root, quietLog()).Register(mux, authSvc, policy.Middleware)

@@ -58,7 +58,7 @@ func newRig(t *testing.T, host string, secret []byte, csServePort int) *rig {
 		t.Fatalf("CreateWebSession: %v", err)
 	}
 
-	authSvc := auth.New(st, nil, false, "", quietLog())
+	authSvc := auth.New(st, nil, false, "", nil, quietLog())
 	mux := http.NewServeMux()
 	codeurl.NewHandler(host, secret, quietLog()).Register(mux, authSvc)
 	srv := httptest.NewServer(mux)
@@ -198,7 +198,7 @@ func TestCodeURL_DifferentUsersDifferentURLs(t *testing.T) {
 	st.CreateWebSession(context.Background(), "tok-alice", "alice0001", 9_999_999_999)
 	st.CreateWebSession(context.Background(), "tok-bob000", "bob00002", 9_999_999_999)
 
-	authSvc := auth.New(st, nil, false, "", quietLog())
+	authSvc := auth.New(st, nil, false, "", nil, quietLog())
 	mux := http.NewServeMux()
 	codeurl.NewHandler("homa.example.com", []byte("a-stable-test-secret-of-32-bytes!"), quietLog()).
 		Register(mux, authSvc)

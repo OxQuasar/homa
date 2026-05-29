@@ -36,6 +36,7 @@
   import Chat from '../lib/Chat.svelte';
   import MessagesTabs from '../lib/MessagesTabs.svelte';
   import MessagesPicker from '../lib/MessagesPicker.svelte';
+  import SandboxLoading from '../lib/SandboxLoading.svelte';
 
   // Spec: §11 state shape.
   const session = $state({
@@ -235,6 +236,15 @@
     chatWidth = clampChatWidth(chatWidth);
   }
 
+  // Two-phase mount: first auth check (lightweight), then sandbox bring-up
+  // (potentially slow). SandboxLoading polls /me/sandbox during phase 2
+  // and calls onSandboxReady when the container is up, which kicks off
+  // the rest of the editor setup (WS open, listeners, restore tabs).
+  // Without this, /login could hang for ~2 minutes when the container
+  // can't come up (bad Anthropic creds being the common case).
+  type Phase = 'loading-auth' | 'starting-sandbox' | 'ready';
+  let phase = $state<Phase>('loading-auth');
+
   onMount(async () => {
     try {
       const m = await me();
@@ -247,6 +257,15 @@
       window.location.hash = '#/login';
       return;
     }
+    // Hand off to SandboxLoading. The actual editor setup (openSession,
+    // listeners, etc.) runs in onSandboxReady below.
+    phase = 'starting-sandbox';
+  });
+
+  // Called by <SandboxLoading> when /me/sandbox flips to ready. Runs
+  // the rest of what used to be in onMount.
+  async function onSandboxReady() {
+    phase = 'ready';
     ws = openSession({
       workDir,
       sessionId,
@@ -298,7 +317,14 @@
     // B5: pause polling while the browser tab is hidden; resume +
     // catch-up when visible again.
     document.addEventListener('visibilitychange', onVisibilityChange);
-  });
+  }
+
+  // SandboxLoading invokes this on a failed bring-up. The component
+  // shows the failure UI itself; we just log so a possible operator
+  // tail catches it.
+  function onSandboxFailed(msg: string) {
+    console.warn('sandbox failed to start:', msg);
+  }
 
   // Persist tabs + active tab. We DON'T use $effect here because Svelte
   // 5's effect first-run fires between mount and onMount's async restore
@@ -652,6 +678,16 @@
 
 <svelte:window onresize={onWindowResize} />
 
+{#if phase === 'starting-sandbox'}
+  <SandboxLoading onReady={onSandboxReady} onFailed={onSandboxFailed} />
+{/if}
+
+<!--
+  The editor markup renders only once the sandbox is ready. While
+  phase === 'loading-auth' the screen is blank (sub-100ms in practice).
+  While 'starting-sandbox' the SandboxLoading overlay above covers it.
+-->
+{#if phase === 'ready'}
 <div class="layout">
   <header>
     <button
@@ -802,6 +838,7 @@
     </section>
   </main>
 </div>
+{/if}
 
 <style>
   .layout { display: flex; flex-direction: column; height: 100vh; }

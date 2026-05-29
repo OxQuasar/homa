@@ -64,7 +64,7 @@ func newRig(t *testing.T) *rig {
 		st.CreateWebSession(context.Background(), tokens[u.ID], u.ID, 9_999_999_999)
 	}
 
-	authSvc := auth.New(st, nil, false, "", quietLog())
+	authSvc := auth.New(st, nil, false, "", nil, quietLog())
 	mux := http.NewServeMux()
 	policy := cors.New(previewBase)
 	msgStore := messages.NewStore(st.DB())

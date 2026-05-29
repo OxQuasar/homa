@@ -46,7 +46,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	// secureCookies=false because httptest serves plain HTTP — production
 	// instances pass true (see config.Config.CookieSecure default).
-	svc := auth.New(st, prov, false, "", log)
+	svc := auth.New(st, prov, false, "", nil, log)
 
 	mux := http.NewServeMux()
 	svc.Register(mux, nil)
@@ -491,7 +491,7 @@ func TestSignupDuplicateEmailDoesNotInvokeProvisioner(t *testing.T) {
 	spy := &countingProvisioner{delegate: stub}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	svc := auth.New(st, spy, false, "", log)
+	svc := auth.New(st, spy, false, "", nil, log)
 
 	mux := http.NewServeMux()
 	svc.Register(mux, nil)
@@ -565,7 +565,7 @@ func TestLoginEnsuresSandbox(t *testing.T) {
 	spy := &countingProvisioner2{delegate: stub}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	svc := auth.New(st, spy, false, "", log)
+	svc := auth.New(st, spy, false, "", nil, log)
 
 	mux := http.NewServeMux()
 	svc.Register(mux, nil)
@@ -655,7 +655,7 @@ func TestLoginBumpsActiveBeforeEnsure(t *testing.T) {
 	obs := &observingProvisioner{delegate: stub, store: st}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	svc := auth.New(st, obs, false, "", log)
+	svc := auth.New(st, obs, false, "", nil, log)
 
 	mux := http.NewServeMux()
 	svc.Register(mux, nil)

@@ -36,7 +36,7 @@ func newTestMux(t *testing.T) (*httptest.Server, *http.Client) {
 
 	prov := provision.NewStubProvisioner(filepath.Join(t.TempDir(), "branches"))
 	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	authSvc := auth.New(st, prov, false, "", log)
+	authSvc := auth.New(st, prov, false, "", nil, log)
 
 	mux := http.NewServeMux()
 	authSvc.Register(mux, nil)

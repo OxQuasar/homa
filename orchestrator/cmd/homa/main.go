@@ -39,6 +39,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/mainsite"
 	"github.com/skipper/homa/orchestrator/internal/prflow"
 	"github.com/skipper/homa/orchestrator/internal/provision"
+	"github.com/skipper/homa/orchestrator/internal/sandboxstatus"
 	"github.com/skipper/homa/orchestrator/internal/proxy"
 	"github.com/skipper/homa/orchestrator/internal/sandbox"
 	"github.com/skipper/homa/orchestrator/internal/static"
@@ -195,7 +196,11 @@ func run(configPath string, log *slog.Logger) error {
 
 	prov := buildProvisioner(cfg, branchesDir, siteTemplateDir, ports, st, codeServerSecret, log)
 
-	authSvc := auth.New(st, prov, cfg.SecureCookies(), cfg.PreviewBaseURL, log)
+	// Sandbox-status tracker fed by /login's async EnsureRunning
+	// goroutine, polled by the editor at /me/sandbox to drive the
+	// loading screen during container bring-up.
+	sbStatus := sandboxstatus.New()
+	authSvc := auth.New(st, prov, cfg.SecureCookies(), cfg.PreviewBaseURL, sbStatus, log)
 
 	mux := http.NewServeMux()
 	// Order: auth (POST endpoints + GET /me) → ws proxy (GET /ws) → static

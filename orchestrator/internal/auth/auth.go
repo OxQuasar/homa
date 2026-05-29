@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/skipper/homa/orchestrator/internal/provision"
+	"github.com/skipper/homa/orchestrator/internal/sandboxstatus"
 	"github.com/skipper/homa/orchestrator/internal/store"
 )
 
@@ -38,7 +39,35 @@ const (
 	nousSessionIDBytes = 4
 	minPasswordLen = 8
 	bcryptCost     = bcrypt.DefaultCost
+
+	// ensureRunningBgTimeout caps how long the background goroutine
+	// that runs EnsureRunning at login will wait. Generous so a slow
+	// first-boot (npm install + vite warmup) has room; the editor's
+	// loading screen shows the user *something is happening* during
+	// this window.
+	ensureRunningBgTimeout = 3 * time.Minute
 )
+
+// friendlyFailureMessage maps an EnsureRunning error to a user-facing
+// hint that the editor's "sandbox failed" screen renders verbatim.
+// Heuristic — match common keywords. Defaults to a generic message.
+func friendlyFailureMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "readiness") || strings.Contains(s, "timeout"):
+		// Most commonly: entrypoint exited before vite started. Top
+		// suspect is missing/expired Anthropic credentials (entrypoint
+		// precondition). Surface that as the actionable suggestion.
+		return "Sandbox did not become ready in time. " +
+			"Common cause: missing/expired Anthropic credentials. " +
+			"Operator: run `claude login` on the host, then `homa reload <userid>`."
+	default:
+		return "Sandbox failed to start: " + s
+	}
+}
 
 // usernamePattern is the strict charset/length constraint enforced at
 // signup. Lowercase ascii letters, digits, underscore; 3-32 chars. Keeps
@@ -52,12 +81,15 @@ type Service struct {
 	prov           provision.Provisioner
 	secureCookies  bool
 	previewBaseURL string
+	sbStatus       *sandboxstatus.Tracker // nil → no async tracking; login stays sync
 	log            *slog.Logger
 }
 
 // New constructs a Service. previewBaseURL may be empty (no preview_url in /me
 // responses); secureCookies controls the Secure attribute on the cookie.
-func New(s *store.Store, p provision.Provisioner, secureCookies bool, previewBaseURL string, log *slog.Logger) *Service {
+// sbStatus may be nil — pass a tracker to enable async EnsureRunning at login
+// with status polling via /me/sandbox.
+func New(s *store.Store, p provision.Provisioner, secureCookies bool, previewBaseURL string, sbStatus *sandboxstatus.Tracker, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -66,6 +98,7 @@ func New(s *store.Store, p provision.Provisioner, secureCookies bool, previewBas
 		prov:           p,
 		secureCookies:  secureCookies,
 		previewBaseURL: previewBaseURL,
+		sbStatus:       sbStatus,
 		log:            log,
 	}
 }
@@ -87,15 +120,21 @@ func (s *Service) Register(mux *http.ServeMux, corsWrap CORSWrapper) {
 	mux.HandleFunc("POST /signup", s.Signup)
 	mux.HandleFunc("POST /login", s.Login)
 	mux.HandleFunc("POST /logout", s.Logout)
+
 	meHandler := s.RequireAuth(http.HandlerFunc(s.Me))
+	// /me/sandbox returns the current bring-up status of the caller's
+	// sandbox so the editor can show a loading / failed screen instead
+	// of a silent hang or a confusing WS-disconnected state. Same auth
+	// gate; same CORS wrap as /me.
+	sandboxHandler := s.RequireAuth(http.HandlerFunc(s.SandboxStatus))
 	if corsWrap != nil {
 		meHandler = corsWrap(meHandler)
-		// Register OPTIONS too — the CORS middleware short-circuits it
-		// with a 204 + preflight headers; without this mount the OPTIONS
-		// would 405 before reaching the wrapper.
+		sandboxHandler = corsWrap(sandboxHandler)
 		mux.Handle("OPTIONS /me", meHandler)
+		mux.Handle("OPTIONS /me/sandbox", sandboxHandler)
 	}
 	mux.Handle("GET /me", meHandler)
+	mux.Handle("GET /me/sandbox", sandboxHandler)
 }
 
 // --- request / response shapes ---
@@ -282,10 +321,33 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("update last_message failed", "err", err)
 	}
 
-	// Bring the user's sandbox back up if the GC stopped it. Non-fatal —
-	// login still succeeds and a future refresh / WS reconnect will retry.
-	if err := s.prov.EnsureRunning(r.Context(), u.ID); err != nil {
-		s.log.Warn("EnsureRunning failed at login; continuing", "user_id", u.ID, "err", err)
+	// Bring the user's sandbox back up if the GC stopped it. Was previously
+	// synchronous (login hangs up to ReadinessTimeout when the container
+	// can't come up — e.g. expired Anthropic credentials). Now async:
+	// login returns immediately; editor polls /me/sandbox to know when
+	// the sandbox is ready and shows a loading screen meanwhile.
+	if s.sbStatus != nil {
+		s.sbStatus.MarkStarting(u.ID)
+		userID := u.ID
+		go func() {
+			// Detached context — must outlive the HTTP request. Long
+			// timeout (>= readiness probe) so the goroutine doesn't
+			// terminate early on a slow first-boot.
+			ctx, cancel := context.WithTimeout(context.Background(), ensureRunningBgTimeout)
+			defer cancel()
+			if err := s.prov.EnsureRunning(ctx, userID); err != nil {
+				s.log.Warn("EnsureRunning failed at login (background)",
+					"user_id", userID, "err", err)
+				s.sbStatus.MarkFailed(userID, friendlyFailureMessage(err))
+				return
+			}
+			s.sbStatus.MarkReady(userID)
+		}()
+	} else {
+		// Legacy path (e.g. tests with nil tracker): keep sync behavior.
+		if err := s.prov.EnsureRunning(r.Context(), u.ID); err != nil {
+			s.log.Warn("EnsureRunning failed at login; continuing", "user_id", u.ID, "err", err)
+		}
 	}
 	if err := s.issueCookie(r.Context(), w, r, u.ID); err != nil {
 		s.log.Error("issue cookie failed", "err", err)
@@ -321,6 +383,24 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 		PreviewURL:    s.previewURLFor(u),
 		NousSessionID: u.NousSessionID,
 	})
+}
+
+// SandboxStatus returns the bring-up state of the caller's sandbox
+// (starting / ready / failed). The editor polls this after login and
+// shows a loading screen while the background EnsureRunning goroutine
+// from /login completes. When no tracker is configured, returns
+// {ready} unconditionally (legacy sync behavior).
+func (s *Service) SandboxStatus(w http.ResponseWriter, r *http.Request) {
+	u, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if s.sbStatus == nil {
+		writeJSON(w, http.StatusOK, sandboxstatus.State{Status: sandboxstatus.StatusReady})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sbStatus.Get(u.ID))
 }
 
 // --- helpers ---

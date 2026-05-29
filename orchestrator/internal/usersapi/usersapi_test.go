@@ -49,7 +49,7 @@ func newRig(t *testing.T, users []store.User, withCookieFor string) *rig {
 		}
 	}
 
-	authSvc := auth.New(st, nil, false, "", quietLog())
+	authSvc := auth.New(st, nil, false, "", nil, quietLog())
 	mux := http.NewServeMux()
 	policy := cors.New(previewBase)
 	usersapi.New(st, quietLog()).Register(mux, authSvc, policy.Middleware)

@@ -77,7 +77,7 @@ func newTestRig(t *testing.T) *testRig {
 	)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	authSvc := auth.New(st, prov, false /* cookieSecure */, "", log)
+	authSvc := auth.New(st, prov, false /* cookieSecure */, "", nil, log)
 
 	mux := http.NewServeMux()
 	authSvc.Register(mux, nil)
