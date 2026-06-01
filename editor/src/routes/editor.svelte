@@ -747,6 +747,7 @@
           title="Open this sandbox in a full VS Code (browser)"
         >Open VS Code</a>
       {/if}
+      <a class="guidelines-link" href="#/guidelines" title="First-time-user guidelines">Guidelines</a>
       {#if isAdmin}
         <a class="admin-link" href="#/admin" title="Application review">Admin</a>
       {/if}
@@ -948,6 +949,20 @@
     white-space: nowrap;
   }
   .vscode-link:hover { background: #e6f0ff; }
+
+  /* Guidelines link — soft neutral grey so it reads as informational
+     navigation, not a primary CTA. Always visible to authed users. */
+  .guidelines-link {
+    padding: 0.25rem 0.6rem;
+    border: 1px solid #ccc;
+    background: #f7f7f7;
+    color: #555;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .guidelines-link:hover { background: #ececec; color: #222; }
 
   /* Admin link — visible only when m.is_admin. Mirrors vscode-link
      shape with admin-blue palette so they read as the same kind of nav. */
