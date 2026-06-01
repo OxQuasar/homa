@@ -557,7 +557,30 @@ func runMerge(r *repo.Repo, args []string, log *slog.Logger) error {
 		return fmt.Errorf("git merge: %w (resolve conflicts in %s then retry)", err, r.MainDir)
 	}
 	log.Info("merge: success", "repo", r.Name)
+	pushMainIfRemote(r, log)
 	return nil
+}
+
+// pushMainIfRemote attempts to push the base branch to `origin` after
+// a successful merge. No-op when the repo has no `origin` remote
+// (e.g. site-template, which is backed up via the wrapping homa repo;
+// or any library install that hasn't wired GitHub yet). Failure is
+// non-fatal — operator can push manually later. Only pushes the base
+// branch; user/* + pr/* stay local.
+func pushMainIfRemote(r *repo.Repo, log *slog.Logger) {
+	check := exec.Command(r.GitBin, "-C", r.MainDir, "remote", "get-url", "origin")
+	if err := check.Run(); err != nil {
+		return // no origin configured; nothing to do
+	}
+	push := exec.Command(r.GitBin, "-C", r.MainDir, "push", "origin", r.BaseBranch)
+	push.Stdout = os.Stdout
+	push.Stderr = os.Stderr
+	if err := push.Run(); err != nil {
+		log.Warn("merge: push to origin failed (non-fatal)",
+			"repo", r.Name, "branch", r.BaseBranch, "err", err)
+		return
+	}
+	log.Info("merge: pushed to origin", "repo", r.Name, "branch", r.BaseBranch)
 }
 
 // mergeCommandLabel returns "merge" for site, "lib merge" for library.
@@ -1273,6 +1296,7 @@ func runPRMerge(r *repo.Repo, args []string, log *slog.Logger) error {
 			err, r.MainDir, r.MainDir)
 	}
 	log.Info("pr merge: success", "branch", branch, "repo", r.Name)
+	pushMainIfRemote(r, log)
 	return nil
 }
 
