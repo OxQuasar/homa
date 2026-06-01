@@ -38,6 +38,11 @@
 
   <ul class="items">
     <li>
+      <a href="/library/iching">
+        <h2>Text</h2>
+      </a>
+    </li>
+    <li>
       <a href="/mysteries/ancient-academy/i-ching/research">
         <h2>Research</h2>
       </a>

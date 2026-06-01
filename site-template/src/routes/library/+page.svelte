@@ -5,6 +5,12 @@
       title: 'Poimandres',
       author: 'Hermes Trismegistus',
       note: 'Corpus Hermeticum I — Greek with English translation.'
+    },
+    {
+      slug: 'iching',
+      title: 'I Ching 易經',
+      author: 'anonymous (Zhou dynasty)',
+      note: 'Book of Changes — all 64 hexagrams with judgment, 彖, 大象, and line texts.'
     }
   ];
 </script>

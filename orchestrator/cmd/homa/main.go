@@ -1053,9 +1053,13 @@ func runPR(r *repo.Repo, args []string, log *slog.Logger) error {
 // messages echo the user's invocation accurately.
 //
 // Note: the SHORT CLI key is "lib" (not "library") — repo.Name is the
-// architectural identifier, cliName maps to what the user typed.
+// architectural identifier; cliName maps to what the user typed.
 func prCommandLabel(r *repo.Repo) string {
-	return repoCommandPrefix(r) + " pr"
+	prefix := repoCommandPrefix(r)
+	if prefix == "" {
+		return "pr"
+	}
+	return prefix + " pr"
 }
 
 // repoCommandPrefix returns the CLI prefix corresponding to a repo:
