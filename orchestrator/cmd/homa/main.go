@@ -515,7 +515,7 @@ func runMerge(r *repo.Repo, args []string, log *slog.Logger) error {
 	}
 	if !userIDPattern.MatchString(userID) {
 		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars). "+
-			"For PR branches use: homa %s pr merge <branch>", userID, r.Name)
+			"For PR branches use: homa %s merge <branch>", userID, prCommandLabel(r))
 	}
 
 	worktreePath := r.UserWorktreeDir(userID)
@@ -562,10 +562,11 @@ func runMerge(r *repo.Repo, args []string, log *slog.Logger) error {
 
 // mergeCommandLabel returns "merge" for site, "lib merge" for library.
 func mergeCommandLabel(r *repo.Repo) string {
-	if r.Name == "site" {
+	prefix := repoCommandPrefix(r)
+	if prefix == "" {
 		return "merge"
 	}
-	return r.Name + " merge"
+	return prefix + " merge"
 }
 
 // runList implements `homa list`: prints every user as
@@ -1050,11 +1051,29 @@ func runPR(r *repo.Repo, args []string, log *slog.Logger) error {
 // prCommandLabel renders the CLI-prefix the user typed to get into
 // this PR dispatcher. "pr" for site, "lib pr" for library. Lets error
 // messages echo the user's invocation accurately.
+//
+// Note: the SHORT CLI key is "lib" (not "library") — repo.Name is the
+// architectural identifier, cliName maps to what the user typed.
 func prCommandLabel(r *repo.Repo) string {
-	if r.Name == "site" {
-		return "pr"
+	return repoCommandPrefix(r) + " pr"
+}
+
+// repoCommandPrefix returns the CLI prefix corresponding to a repo:
+//
+//	site    → "" (no prefix; commands are bare `homa pr`, `homa merge`)
+//	library → "lib"
+//
+// Lets error messages and follow-up hints echo the user's actual CLI
+// invocation rather than the internal repo.Name.
+func repoCommandPrefix(r *repo.Repo) string {
+	switch r.Name {
+	case "site":
+		return ""
+	case "library":
+		return "lib"
+	default:
+		return r.Name
 	}
-	return r.Name + " pr"
 }
 
 // loadSiteRepo + loadLibraryRepo are the two concrete-repo constructors
@@ -1266,6 +1285,20 @@ func runPRClose(r *repo.Repo, args []string, log *slog.Logger) error {
 		return fmt.Errorf("branch does not exist: %s", branch)
 	}
 	if err := prflow.DeleteBranch(r.GitBin, r.MainDir, branch); err != nil {
+		// Most common failure: the branch is checked out in a user's
+		// worktree. Git's error is clear but the fix isn't obvious to
+		// an operator that didn't write the CLI — surface it explicitly.
+		if strings.Contains(err.Error(), "used by worktree") {
+			pr, _ := prflow.ParsePRBranch(branch)
+			hint := fmt.Sprintf("\n\nThe branch is currently checked out in user %s's worktree.\n"+
+				"To detach + close: git -C %s checkout %s && homa %s close %s",
+				pr.UserID,
+				r.UserWorktreeDir(pr.UserID),
+				r.UserBranch(pr.UserID),
+				prCommandLabel(r),
+				branch)
+			return fmt.Errorf("delete branch: %w%s", err, hint)
+		}
 		return fmt.Errorf("delete branch: %w", err)
 	}
 	log.Info("pr close: deleted", "branch", branch, "repo", r.Name)

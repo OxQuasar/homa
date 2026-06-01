@@ -6,13 +6,23 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/skipper/homa/orchestrator/internal/sandbox"
 	"github.com/skipper/homa/orchestrator/internal/store"
+	"github.com/skipper/homa/orchestrator/internal/worktree"
 )
+
+// quietLog returns a slog.Logger that discards output — keeps test
+// runs tidy when we exercise paths that log warnings.
+func quietLog() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+}
 
 // ----------------------------------------------------------------------------
 // Fakes for worktree.Service, sandbox.Manager, tsserve.Service. Each records
@@ -574,5 +584,119 @@ func TestEnsureRunningPropagatesEnsureError(t *testing.T) {
 	}
 	if !errors.Is(err, sb.ensureErr) {
 		t.Errorf("errors.Is: got %v, want underlying %v", err, sb.ensureErr)
+	}
+}
+
+// TestEnsureLibraryWorktreeAttachesToExistingBranch — bug fix: when a
+// user's library worktree dir was deleted manually (or rolled back)
+// but the user/<id> branch ref survived, EnsureLibraryWorktree must
+// attach to the existing branch rather than trying to recreate it
+// (which fails with "branch already exists").
+func TestEnsureLibraryWorktreeAttachesToExistingBranch(t *testing.T) {
+	// Build a real git repo on disk so we can exercise the git plumbing.
+	tmp := t.TempDir()
+	libDir := filepath.Join(tmp, "library")
+	branchesDir := filepath.Join(tmp, "library-branches")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit(libDir, "init", "-b", "main")
+	runGit(libDir, "config", "user.email", "test@test")
+	runGit(libDir, "config", "user.name", "test")
+	runGit(libDir, "commit", "--allow-empty", "-m", "init")
+
+	// Pre-create the user/abcd1234 branch (simulates leftover from a
+	// previous worktree that was removed).
+	runGit(libDir, "branch", "user/abcd1234")
+
+	// Now build a real provisioner just enough to call
+	// EnsureLibraryWorktree. We only need LibraryDir, LibraryBranchesDir,
+	// Worktree, and a Log.
+	pp := &PodmanProvisioner{
+		LibraryDir:         libDir,
+		LibraryBranchesDir: branchesDir,
+		Worktree:           worktree.New("git", sandbox.ExecRunner{}),
+		Log:                quietLog(),
+	}
+	if err := pp.EnsureLibraryWorktree(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("EnsureLibraryWorktree (existing branch): %v", err)
+	}
+	// Verify worktree exists + is on the right branch.
+	userLib := filepath.Join(branchesDir, "abcd1234")
+	if _, err := os.Stat(userLib); err != nil {
+		t.Fatalf("worktree not created: %v", err)
+	}
+	cmd := exec.Command("git", "-C", userLib, "branch", "--show-current")
+	out, _ := cmd.Output()
+	if got := strings.TrimSpace(string(out)); got != "user/abcd1234" {
+		t.Errorf("branch: got %q, want user/abcd1234", got)
+	}
+}
+
+// TestEnsureLibraryWorktreeIdempotent — calling twice on a fresh
+// branch + dir should be a no-op the second time.
+func TestEnsureLibraryWorktreeIdempotent(t *testing.T) {
+	tmp := t.TempDir()
+	libDir := filepath.Join(tmp, "library")
+	branchesDir := filepath.Join(tmp, "library-branches")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", libDir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", "-b", "main")
+	runGit("config", "user.email", "test@test")
+	runGit("config", "user.name", "test")
+	runGit("commit", "--allow-empty", "-m", "init")
+
+	pp := &PodmanProvisioner{
+		LibraryDir:         libDir,
+		LibraryBranchesDir: branchesDir,
+		Worktree:           worktree.New("git", sandbox.ExecRunner{}),
+		Log:                quietLog(),
+	}
+	if err := pp.EnsureLibraryWorktree(context.Background(), "abcd1234"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := pp.EnsureLibraryWorktree(context.Background(), "abcd1234"); err != nil {
+		t.Errorf("second call (idempotent): %v", err)
+	}
+}
+
+// TestEnsureLibraryWorktreeSkipsWhenLibraryUninitialised — if data/library
+// has no .git directory (homa lib init not yet run), EnsureLibraryWorktree
+// should silently return nil. Lets users sign up + use site features even
+// when the library feature isn't set up yet.
+func TestEnsureLibraryWorktreeSkipsWhenLibraryUninitialised(t *testing.T) {
+	tmp := t.TempDir()
+	libDir := filepath.Join(tmp, "library")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	branchesDir := filepath.Join(tmp, "library-branches")
+	pp := &PodmanProvisioner{
+		LibraryDir:         libDir,
+		LibraryBranchesDir: branchesDir,
+		Worktree:           worktree.New("git", sandbox.ExecRunner{}),
+		Log:                quietLog(),
+	}
+	if err := pp.EnsureLibraryWorktree(context.Background(), "abcd1234"); err != nil {
+		t.Errorf("uninitialised library: %v", err)
+	}
+	// And no worktree dir was created.
+	if _, err := os.Stat(filepath.Join(branchesDir, "abcd1234")); !os.IsNotExist(err) {
+		t.Errorf("worktree was created despite library uninitialised: %v", err)
 	}
 }

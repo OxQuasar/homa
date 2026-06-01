@@ -191,6 +191,8 @@ func (pp *PodmanProvisioner) buildContainerEnv(ctx context.Context, userID strin
 // failure can roll back in the reverse order.
 type completedSteps struct {
 	worktreeCreated            bool
+	libraryWorktreeCreated     bool
+	libraryWorktreePath        string // populated only when libraryWorktreeCreated
 	sandboxStarted             bool
 	tsserveRegistered          bool
 	tsserveCodeServerRegistered bool
@@ -258,9 +260,16 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	steps.worktreeCreated = true
 
 	// 1b. Library worktree — best effort. Library is optional; if
-	// `homa lib init` wasn't run yet, this is a no-op.
+	// `homa lib init` wasn't run yet, this is a no-op. On success, we
+	// record the path so rollback can remove it if later steps fail.
 	if err := pp.EnsureLibraryWorktree(ctx, userID); err != nil {
 		log.Warn("provision: library worktree (non-fatal)", "err", err)
+	} else if pp.LibraryBranchesDir != "" {
+		libPath := filepath.Join(pp.LibraryBranchesDir, userID)
+		if _, err := os.Stat(libPath); err == nil {
+			steps.libraryWorktreeCreated = true
+			steps.libraryWorktreePath = libPath
+		}
 	}
 
 	// 2. podman run
@@ -470,8 +479,42 @@ func (pp *PodmanProvisioner) EnsureLibraryWorktree(ctx context.Context, userID s
 	branch := "user/" + userID
 	pp.Log.Info("library worktree: creating",
 		"user_id", userID, "branch", branch, "path", userLib)
+	// Worktree.Create runs `git worktree add <path> -b <branch> main`.
+	// If <branch> already exists (e.g. previous worktree was removed but
+	// the branch ref was left in the repo), the `-b` fails with "branch
+	// already exists". Detect first + retry without `-b` if needed.
+	if branchExistsInRepo(ctx, pp.LibraryDir, branch) {
+		pp.Log.Info("library worktree: attaching to existing branch",
+			"user_id", userID, "branch", branch)
+		if err := attachWorktreeToExistingBranch(ctx, pp.LibraryDir, userLib, branch); err != nil {
+			return fmt.Errorf("library worktree attach: %w", err)
+		}
+		return nil
+	}
 	if err := pp.Worktree.Create(ctx, pp.LibraryDir, branch, userLib); err != nil {
 		return fmt.Errorf("library worktree create: %w", err)
+	}
+	return nil
+}
+
+// branchExistsInRepo returns true if `git -C repo show-ref refs/heads/<branch>`
+// finds the branch. Used to dispatch "create new" vs "attach existing"
+// in EnsureLibraryWorktree's `git worktree add` step.
+func branchExistsInRepo(ctx context.Context, repo, branch string) bool {
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "show-ref",
+		"--verify", "--quiet", "refs/heads/"+branch)
+	return cmd.Run() == nil
+}
+
+// attachWorktreeToExistingBranch runs `git worktree add <path> <branch>`
+// (no `-b`) — checks out the existing branch into a new worktree. Used
+// when the branch survived a prior worktree deletion.
+func attachWorktreeToExistingBranch(ctx context.Context, repo, worktreePath, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "worktree", "add", worktreePath, branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree add %s %s: %w (stderr: %s)",
+			worktreePath, branch, err, string(out))
 	}
 	return nil
 }
@@ -569,6 +612,12 @@ func (pp *PodmanProvisioner) fail(ctx context.Context, log *slog.Logger, steps *
 	if steps.sandboxStarted {
 		if err := pp.Sandbox.Stop(ctx, steps.containerName); err != nil {
 			log.Warn("teardown: sandbox stop failed", "name", steps.containerName, "err", err)
+		}
+	}
+	if steps.libraryWorktreeCreated {
+		if err := pp.Worktree.Remove(ctx, pp.LibraryDir, steps.libraryWorktreePath); err != nil {
+			log.Warn("teardown: library worktree remove failed",
+				"path", steps.libraryWorktreePath, "err", err)
 		}
 	}
 	if steps.worktreeCreated {
