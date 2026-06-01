@@ -23,6 +23,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/skipper/homa/orchestrator/internal/auth"
+	"github.com/skipper/homa/orchestrator/internal/provision"
 	"github.com/skipper/homa/orchestrator/internal/store"
 )
 
@@ -41,6 +42,11 @@ const (
 	// shutdownGrace bounds how long Close calls take during teardown when
 	// the parent context cancels (e.g. orchestrator SIGTERM).
 	shutdownGrace = 5 * time.Second
+
+	// ensureOnDialTimeout caps the wake-on-dial-refused recovery —
+	// container start + readiness probe (vite warmup). Generous; the
+	// alternative is the user gets bounced to login.
+	ensureOnDialTimeout = 3 * time.Minute
 )
 
 // Register mounts the cookie-gated /ws reverse proxy onto mux. The auth
@@ -48,17 +54,23 @@ const (
 // hub may be nil (legacy / test paths that don't need force-disconnect or
 // server-push); when non-nil, Register associates every browser conn with
 // its userID so lifecycle can act on them.
-func Register(mux *http.ServeMux, st *store.Store, authSvc *auth.Service, hub *Hub, log *slog.Logger) {
+//
+// prov may be nil — when non-nil, an upstream-dial-refused triggers a
+// best-effort EnsureRunning followed by a single retry. Lets the editor
+// auto-recover when a user's container has been idle-GC'd without
+// requiring re-login.
+func Register(mux *http.ServeMux, st *store.Store, authSvc *auth.Service, hub *Hub, prov provision.Provisioner, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := &handler{store: st, hub: hub, log: log}
+	h := &handler{store: st, hub: hub, prov: prov, log: log}
 	mux.Handle("GET /ws", authSvc.RequireAuth(http.HandlerFunc(h.serve)))
 }
 
 type handler struct {
 	store *store.Store
-	hub   *Hub // may be nil — register/unregister no-op if so
+	hub   *Hub                  // may be nil — register/unregister no-op if so
+	prov  provision.Provisioner // may be nil — wake-on-dial-refused disabled
 	log   *slog.Logger
 }
 
@@ -92,10 +104,7 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	defer browser.Close(websocket.StatusInternalError, "proxy ended")
 
 	upstreamURL := fmt.Sprintf("ws://127.0.0.1:%d/", u.NousPort)
-	dialCtx, dialCancel := context.WithTimeout(r.Context(), upstreamDialTimeout)
-	defer dialCancel()
-
-	upstream, _, err := websocket.Dial(dialCtx, upstreamURL, nil)
+	upstream, err := h.dialUpstreamWithRecovery(r.Context(), u, upstreamURL)
 	if err != nil {
 		h.log.Warn("upstream dial failed", "user_id", u.ID, "url", upstreamURL, "err", err)
 		_ = browser.Close(websocket.StatusInternalError, "sandbox unreachable")
@@ -222,4 +231,41 @@ func (h *handler) bumpMessage(ctx context.Context, userID string) {
 	if err := h.store.UpdateLastMessage(updateCtx, userID, time.Now().UTC().Unix()); err != nil {
 		h.log.Warn("UpdateLastMessage failed", "user_id", userID, "err", err)
 	}
+}
+
+// dialUpstreamWithRecovery tries the upstream WS dial. On failure with
+// a provisioner configured, it best-effort EnsureRunning's the user's
+// container (covers the idle-GC'd-or-crashed case) and retries the
+// dial once. Keeps the browser side alive throughout — the editor's
+// WS reconnect path used to nuke the cookie when the upstream died,
+// which was poor UX for transient drops.
+//
+// Returns the upstream conn on success, or the most recent dial error.
+func (h *handler) dialUpstreamWithRecovery(parent context.Context, u *store.User, upstreamURL string) (*websocket.Conn, error) {
+	dial := func() (*websocket.Conn, error) {
+		ctx, cancel := context.WithTimeout(parent, upstreamDialTimeout)
+		defer cancel()
+		c, _, err := websocket.Dial(ctx, upstreamURL, nil)
+		return c, err
+	}
+	c, err := dial()
+	if err == nil {
+		return c, nil
+	}
+	if h.prov == nil {
+		return nil, err
+	}
+	h.log.Info("upstream dial refused; waking container then retrying",
+		"user_id", u.ID, "first_err", err)
+	// Generous timeout — EnsureRunning includes container start + the
+	// readiness probe (vite warmup). Detached from request context so
+	// a slow browser-side timeout doesn't kill the wake mid-flight.
+	wakeCtx, wakeCancel := context.WithTimeout(context.Background(), ensureOnDialTimeout)
+	defer wakeCancel()
+	if errEnsure := h.prov.EnsureRunning(wakeCtx, u.ID); errEnsure != nil {
+		h.log.Warn("EnsureRunning during ws-dial recovery failed",
+			"user_id", u.ID, "err", errEnsure)
+		return nil, err // return ORIGINAL dial error; ensure error is logged
+	}
+	return dial()
 }

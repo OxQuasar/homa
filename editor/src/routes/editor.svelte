@@ -61,11 +61,17 @@
   // and we send the user back to the public site.
   let wsWasOpen = false;
   // tearingDown flips true the moment onDestroy starts (i.e. the user
-  // navigated away — e.g. to /admin). Suppresses the auto-logout-on-WS-
-  // close path so an intentional component unmount isn't mistaken for
-  // a lost-session event. Plain (non-reactive) variable; only read by
-  // the onStatus callback at the moment WS closes.
+  // navigated away — e.g. to /admin). Suppresses the WS-close recovery
+  // path so an intentional component unmount isn't mistaken for a
+  // container drop. Plain (non-reactive) variable; only read at the
+  // moment WS closes.
   let tearingDown = false;
+  // disconnected → renders the "Sandbox disconnected" overlay. Flipped
+  // true when the WS closes after having been open and we're not
+  // tearing down (container died: idle GC, crash, orch restart, etc).
+  // Cookie is preserved; user clicks Reconnect to reload → orchestrator's
+  // WS proxy auto-EnsureRunning's the container on the next dial.
+  let disconnected = $state(false);
 
   // "Open VS Code" link. Fetched once on mount; null while loading, ''
   // when the feature is disabled (or user's ports not yet allocated).
@@ -281,14 +287,16 @@
       onStatus: (s) => {
         wsStatus = s;
         if (s === 'open') wsWasOpen = true;
-        // Lost-session path. We were live, the WS dropped (forced idle
-        // compaction, container stopped, orchestrator restart, network
-        // blip). Same flow as the Log out button: clear the cookie, send
-        // back to main. Re-login via the public site's pill restarts
-        // cleanly with a fresh WS. Suppressed when the close is from an
-        // intentional unmount (user navigated to /admin etc.) — see
-        // tearingDown set in onDestroy.
-        else if (s === 'closed' && wsWasOpen && !tearingDown) onLogout();
+        // Container-died path. WS dropped after being open (idle GC,
+        // container crash, orchestrator restart, network blip). Show
+        // the reconnect overlay instead of silently nuking the cookie
+        // — the orchestrator's WS proxy will EnsureRunning on the next
+        // dial, so a page reload is enough to recover.
+        // Suppressed when the close is from an intentional unmount
+        // (navigation to /admin etc.) — see tearingDown in onDestroy.
+        else if (s === 'closed' && wsWasOpen && !tearingDown) {
+          disconnected = true;
+        }
       },
       onEvent: handleEvent
     });
@@ -696,6 +704,19 @@
   <SandboxLoading onReady={onSandboxReady} onFailed={onSandboxFailed} />
 {/if}
 
+{#if disconnected}
+  <!-- WS dropped after being open; container most likely idle-GC'd.
+       Cookie is still valid. Reconnect = page reload → orchestrator's
+       proxy ensures the container on the next WS dial. -->
+  <div class="disconnect-overlay" role="dialog" aria-live="assertive">
+    <div class="card">
+      <h2>Sandbox disconnected</h2>
+      <p>Your session is still valid — just need to wake the container back up.</p>
+      <button onclick={() => window.location.reload()}>Reconnect</button>
+    </div>
+  </div>
+{/if}
+
 <!--
   The editor markup renders only once the sandbox is ready. While
   phase === 'loading-auth' the screen is blank (sub-100ms in practice).
@@ -1093,4 +1114,43 @@
      col-resize cursor everywhere, even over the iframe. */
   :global(body.splitting) { cursor: col-resize !important; user-select: none; }
   :global(body.splitting iframe) { pointer-events: none; }
+
+  /* Sandbox disconnected overlay — fires when the WS drops after being
+     open. Mirrors SandboxLoading's card aesthetic so the experience
+     feels consistent. */
+  .disconnect-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(20, 20, 20, 0.45);
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  .disconnect-overlay .card {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 2rem 2.25rem;
+    text-align: center;
+    max-width: 420px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  }
+  .disconnect-overlay h2 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem; font-weight: 600;
+    color: #222;
+  }
+  .disconnect-overlay p {
+    margin: 0 0 1.25rem;
+    font-size: 0.9rem;
+    color: #555;
+  }
+  .disconnect-overlay button {
+    padding: 0.55rem 1.5rem;
+    border: none; border-radius: 4px;
+    background: #1f6feb; color: white;
+    cursor: pointer;
+    font-size: 0.9rem; font-weight: 500;
+  }
+  .disconnect-overlay button:hover { background: #1858c5; }
 </style>

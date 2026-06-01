@@ -230,7 +230,7 @@ func run(configPath string, log *slog.Logger) error {
 	corsPolicy := cors.New(cfg.PreviewBaseURL)
 	authSvc.Register(mux, corsPolicy.Middleware)
 	hub := proxy.NewHub(log)
-	proxy.Register(mux, st, authSvc, hub, log)
+	proxy.Register(mux, st, authSvc, hub, prov, log)
 	upload.New(branchesDir, cfg.UploadMaxBytes, log).Register(mux, authSvc)
 
 	// Code-server URL endpoint: returns per-user {url, enabled} for the
