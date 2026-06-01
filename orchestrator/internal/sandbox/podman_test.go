@@ -49,7 +49,7 @@ func TestEnsureEmitsSpecArgv(t *testing.T) {
 
 	runCall := calls[1]
 	wantArgs := []string{
-		"run", "-d", "--rm",
+		"run", "-d", "--replace", "--rm",
 		"--name", "homa-user-abcd1234",
 		"-v", "/var/homa/branches/abcd1234:/workspace:Z",
 		"-p", "127.0.0.1:40000:9000",
@@ -88,7 +88,7 @@ func TestEnsureEmitsCodeServerPort(t *testing.T) {
 	}
 	runCall := fr.Calls()[1]
 	wantArgs := []string{
-		"run", "-d", "--rm",
+		"run", "-d", "--replace", "--rm",
 		"--name", "homa-user-abcd1234",
 		"-v", "/var/homa/branches/abcd1234:/workspace:Z",
 		"-p", "127.0.0.1:40000:9000",
@@ -194,7 +194,7 @@ func TestEnsureEmitsMountsAfterWorkspace(t *testing.T) {
 	}
 	runCall := fr.Calls()[1]
 	wantArgs := []string{
-		"run", "-d", "--rm",
+		"run", "-d", "--replace", "--rm",
 		"--name", "homa-user-abcd1234",
 		"-v", "/var/homa/branches/abcd1234:/workspace:Z",
 		"-v", "/host/.claude/.credentials.json:/root/.claude/.credentials.json:ro",

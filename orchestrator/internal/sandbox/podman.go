@@ -61,15 +61,18 @@ func (pm *PodmanManager) Ensure(ctx context.Context, spec Spec) error {
 //
 // Flags vary by spec:
 //   - NousPort > 0  → emit `-p` for nous; 0 skips (main sandbox uses 0).
-//   - !NoAutoRemove → emit `--rm`; the inverse leaves crashed containers
-//                     inspectable AND emits `--replace` instead so a
-//                     stopped corpse of the same name doesn't block restart
-//                     (matters for the mainsite watchdog respawn path).
+//   - !NoAutoRemove → emit `--rm` (auto-remove after exit).
+//   - All cases also emit `--replace`: if a container with the same name
+//     already exists (e.g. stuck in `Created` after an interrupted start,
+//     or a stopped corpse the mainsite watchdog wants to recreate), remove
+//     it first. Without --replace a corpse blocks `podman run` with
+//     "name already in use", and `--rm` alone DOES NOT clean up — it only
+//     fires when the container exits naturally. Symptom seen in production:
+//     orchestrator crashed mid-create → container in Created state →
+//     subsequent EnsureRunning fails forever until manual `podman rm`.
 func buildRunArgs(spec Spec) []string {
-	args := []string{"run", "-d"}
-	if spec.NoAutoRemove {
-		args = append(args, "--replace") // rm-and-recreate if stopped corpse exists
-	} else {
+	args := []string{"run", "-d", "--replace"}
+	if !spec.NoAutoRemove {
 		args = append(args, "--rm")
 	}
 	args = append(args,
