@@ -1,10 +1,10 @@
-// Server load for the I Ching research browser. Thin wrapper around
-// $lib/corpus.ts's loadCorpus, pinned to /library/iching.
+// Server load for the MEV research browser. Thin wrapper around
+// $lib/corpus.ts's loadCorpus, pinned to /library/mev.
 
 import { loadCorpus, type LoadResult } from '$lib/corpus';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, parent }): Promise<LoadResult> => {
   const { authed } = await parent();
-  return loadCorpus('/library/iching', params.path, authed);
+  return loadCorpus('/library/mev', params.path, authed);
 };

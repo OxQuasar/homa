@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -57,13 +58,22 @@ type PodmanProvisioner struct {
 	// var and the entrypoint will skip launching code-server.
 	CodeServerSecret []byte
 	// LibraryDir is an absolute host path to operator-managed reference
-	// content (typically <DataDir>/docs/). When non-empty AND the
-	// directory exists, it's bind-mounted RO into every user container
-	// at /library so the sandbox LLM can read reference material.
-	// Same source is served via /api/library/* by the orchestrator
-	// to public visitors. Empty disables the feature (no mount; the
-	// /api/library/* handler returns 404).
+	// content (typically <DataDir>/library/). MAIN worktree of the
+	// library git repo — bind-mounted RO into homa-main so the public
+	// SvelteKit pages can do SSR off the curated content. User
+	// containers DO NOT mount this directly; they mount their own
+	// per-user worktree (see LibraryBranchesDir). Empty disables.
 	LibraryDir string
+
+	// LibraryBranchesDir is the root for per-user library worktrees
+	// (mirrors BranchesDir, but for the library repo). At provision +
+	// EnsureRunning time, the orchestrator ensures the user's library
+	// worktree exists at <LibraryBranchesDir>/<userid> on branch
+	// user/<userid>, then bind-mounts it RW into the container at
+	// /library. The LLM can read AND write — commits are tracked,
+	// reviewable via `homa lib pr`. Empty disables (containers don't
+	// get a /library mount at all).
+	LibraryBranchesDir string
 
 	// ClaudeCredentialsPath is an absolute host path to a Claude Code
 	// `.credentials.json`. When non-empty AND the file exists at
@@ -247,6 +257,12 @@ func (pp *PodmanProvisioner) Provision(ctx context.Context, userID string) (Resu
 	}
 	steps.worktreeCreated = true
 
+	// 1b. Library worktree — best effort. Library is optional; if
+	// `homa lib init` wasn't run yet, this is a no-op.
+	if err := pp.EnsureLibraryWorktree(ctx, userID); err != nil {
+		log.Warn("provision: library worktree (non-fatal)", "err", err)
+	}
+
 	// 2. podman run
 	log.Info("provision: stage", "stage", "sandbox_ensure", "image", pp.ImageRef)
 	codeServerOn := len(pp.CodeServerSecret) > 0
@@ -378,23 +394,104 @@ func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 				"path", pp.ClaudeCredentialsPath, "err", err)
 		}
 	}
-	// Operator-managed reference content (data/library/ → /library/, RO).
-	// The sandbox LLM can `ls /library/`, `cat /library/iching/...` to
-	// understand what reference material exists. Same source of truth as
-	// the orchestrator's /api/library/* HTTP handler serves to visitors.
-	// Skipped silently when LibraryDir is unset or doesn't exist —
-	// keeps the feature opt-in.
-	if pp.LibraryDir != "" {
-		if _, err := os.Stat(pp.LibraryDir); err == nil {
+	// Per-user library worktree (RW) → /library. LLM commits its
+	// research contributions here; operator reviews + merges into the
+	// library main via `homa lib pr`. Worktree must be created (via
+	// EnsureLibraryWorktree) before this mount can be attached.
+	//
+	// We ALSO mount the library main's .git directory at the SAME host
+	// path inside the container. Reason: the worktree's `.git` file is
+	// a pointer ("gitdir: /home/.../library/.git/worktrees/<id>") that
+	// references the main repo's `.git` directory by absolute host
+	// path. For `git` inside the container to follow that pointer, the
+	// path must resolve identically inside the namespace. Mounting at
+	// the same path keeps the worktree machinery functional with zero
+	// rewrites. The container sees the host path, which is mild info
+	// leakage but functional.
+	//
+	// Silently skipped when the per-user worktree dir doesn't exist
+	// (e.g. library repo not initialised, or this is the homa-main
+	// container which has no userID).
+	if pp.LibraryBranchesDir != "" && userID != "" {
+		userLib := filepath.Join(pp.LibraryBranchesDir, userID)
+		if _, err := os.Stat(userLib); err == nil {
 			out = append(out, sandbox.Mount{
-				Src: pp.LibraryDir, Dst: libraryContainerPath, ReadOnly: true,
+				Src: userLib, Dst: libraryContainerPath, ReadOnly: false,
 			})
+			// Shared .git for the library — gives the worktree access
+			// to refs + objects so commits work. Same path inside +
+			// outside the container so the worktree's gitdir pointer
+			// resolves.
+			libGit := filepath.Join(pp.LibraryDir, ".git")
+			if _, err := os.Stat(libGit); err == nil {
+				out = append(out, sandbox.Mount{
+					Src: libGit, Dst: libGit, ReadOnly: false,
+				})
+			}
 		} else if !os.IsNotExist(err) {
-			pp.Log.Warn("library dir stat failed",
-				"path", pp.LibraryDir, "err", err)
+			pp.Log.Warn("library worktree stat failed",
+				"path", userLib, "err", err)
 		}
 	}
 	return out
+}
+
+// EnsureLibraryWorktree creates the per-user library worktree at
+// <LibraryBranchesDir>/<userID> on branch user/<userID> if it doesn't
+// already exist. Idempotent — returns success if the worktree is
+// already present. Silently skipped when LibraryDir or
+// LibraryBranchesDir is unconfigured, or when the library repo hasn't
+// been initialised (no .git directory under LibraryDir).
+//
+// Called by Provision (first-time signup) AND EnsureRunning (so users
+// that predate the library feature get their worktree on next container
+// start). Failure is non-fatal — caller logs and continues without the
+// /library mount.
+func (pp *PodmanProvisioner) EnsureLibraryWorktree(ctx context.Context, userID string) error {
+	if pp.LibraryDir == "" || pp.LibraryBranchesDir == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(pp.LibraryDir, ".git")); err != nil {
+		// Library not initialised as a git repo — `homa lib init` not yet run.
+		return nil
+	}
+	userLib := filepath.Join(pp.LibraryBranchesDir, userID)
+	if _, err := os.Stat(userLib); err == nil {
+		// Already exists. Best-effort fetch+ff-only-merge of main so the
+		// user's worktree picks up operator-merged research from main.
+		// Non-fatal: if it fails (e.g. user has divergent commits), we
+		// just log and continue — user keeps their existing branch state.
+		pp.pullLibraryMain(ctx, userLib)
+		return nil
+	}
+	if err := os.MkdirAll(pp.LibraryBranchesDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir library_branches_dir: %w", err)
+	}
+	branch := "user/" + userID
+	pp.Log.Info("library worktree: creating",
+		"user_id", userID, "branch", branch, "path", userLib)
+	if err := pp.Worktree.Create(ctx, pp.LibraryDir, branch, userLib); err != nil {
+		return fmt.Errorf("library worktree create: %w", err)
+	}
+	return nil
+}
+
+// pullLibraryMain ff-only merges the library's main into the user's
+// worktree so operator-merged research propagates. Best-effort: on
+// divergence / lock / etc., logs and returns. Doesn't perturb branch
+// state. Called at container-start.
+//
+// Note: a `git worktree` shares its objects with the parent repo;
+// `main` is already visible (no `git fetch` needed in this layout —
+// there's no separate remote). So we just attempt `git merge --ff-only
+// main`. If user has divergent commits, it cleanly no-ops.
+func (pp *PodmanProvisioner) pullLibraryMain(ctx context.Context, userLib string) {
+	bin := "git"
+	cmd := exec.CommandContext(ctx, bin, "-C", userLib, "merge", "--ff-only", "main")
+	if err := cmd.Run(); err != nil {
+		pp.Log.Debug("library pull: ff-only merge skipped (divergent or no new commits)",
+			"path", userLib)
+	}
 }
 
 // ensureUserConfig returns the path to <UserConfigsDir>/<userID>/config.json,
@@ -566,6 +663,14 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 	probe := pp.Probe
 	if probe == nil {
 		probe = HTTPProbe
+	}
+
+	// Lazy library worktree — covers users that predate the feature
+	// + handles operator-merged content (ff-only main → user). Best
+	// effort: a failure here just means the user starts without a
+	// /library mount.
+	if err := pp.EnsureLibraryWorktree(ctx, u.ID); err != nil {
+		log.Warn("ensure: library worktree (non-fatal)", "err", err)
 	}
 
 	log.Info("ensure: stage", "stage", "sandbox_ensure")

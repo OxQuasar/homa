@@ -1,5 +1,5 @@
 <script lang="ts">
-  import raw from '$lib/library/poimandres.txt?raw';
+  import type { PageProps } from './$types';
 
   type Block =
     | { type: 'title'; greek: string; english: string }
@@ -21,7 +21,8 @@
     });
   }
 
-  const blocks = parse(raw);
+  let { data }: PageProps = $props();
+  let blocks = $derived(parse(data.raw));
 </script>
 
 <svelte:head>

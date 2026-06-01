@@ -207,12 +207,19 @@ type Config struct {
 	// out of PreviewBaseURL so a single base URL drives both surfaces.
 	CodeServerHost string `json:"code_server_host"`
 
-	// LibraryDir is the operator-managed reference content directory.
-	// Bind-mounted RO into every user container at /library so the
-	// sandbox LLM can read reference material; also served by the
-	// orchestrator at /api/library/* to public visitors (auth-required).
-	// Empty → "<DataDir>/docs". Resolved relative to config file dir.
+	// LibraryDir is the operator-managed reference content directory —
+	// the MAIN worktree of the library git repo. Bind-mounted RO into
+	// homa-main at /library so public SvelteKit pages can read it for
+	// SSR. Also served at /api/library/* (auth-required). Per-user
+	// containers bind their OWN library worktree at /library (RW); see
+	// LibraryBranchesDir. Empty → "<DataDir>/library".
 	LibraryDir string `json:"library_dir"`
+
+	// LibraryBranchesDir is the root under which per-user library
+	// worktrees live (each subdir = one user's checkout on branch
+	// user/<userid>). Mirrors BranchesDir but for the library repo
+	// instead of site-template. Empty → "<DataDir>/library-branches".
+	LibraryBranchesDir string `json:"library_branches_dir"`
 }
 
 // Load reads the config from path. If path is empty or missing, returns a
@@ -263,6 +270,7 @@ func resolveRelativePaths(cfg *Config, base string) {
 		&cfg.NousConfigTemplate,
 		&cfg.CodeServerSecretPath,
 		&cfg.LibraryDir,
+		&cfg.LibraryBranchesDir,
 	} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(base, *p)
@@ -356,6 +364,9 @@ func applyDefaults(cfg *Config) {
 	// config; opt-elsewhere by setting an absolute or relative path.
 	if cfg.LibraryDir == "" {
 		cfg.LibraryDir = filepath.Join(cfg.DataDir, "library")
+	}
+	if cfg.LibraryBranchesDir == "" {
+		cfg.LibraryBranchesDir = filepath.Join(cfg.DataDir, "library-branches")
 	}
 	if cfg.MainSiteHostPort == 0 {
 		cfg.MainSiteHostPort = defaultMainSiteHostPort

@@ -7,7 +7,7 @@
 
 <CorpusBrowser
   {data}
-  prefix="/mysteries/ancient-academy/i-ching/research"
-  rootLabel="Research"
-  rootBackHref="/mysteries/ancient-academy/i-ching"
+  prefix="/mysteries/modern-marvels/financial-markets/mev"
+  rootLabel="MEV"
+  rootBackHref="/mysteries/modern-marvels/financial-markets"
 />

@@ -39,6 +39,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
 	"github.com/skipper/homa/orchestrator/internal/mainsite"
 	"github.com/skipper/homa/orchestrator/internal/prflow"
+	"github.com/skipper/homa/orchestrator/internal/repo"
 	"github.com/skipper/homa/orchestrator/internal/provision"
 	"github.com/skipper/homa/orchestrator/internal/sandboxstatus"
 	"github.com/skipper/homa/orchestrator/internal/proxy"
@@ -64,7 +65,12 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "merge":
-			if err := runMerge(os.Args[2:], log); err != nil {
+			r, _, err := loadSiteRepo()
+			if err != nil {
+				log.Error("merge: load site repo", "err", err)
+				os.Exit(1)
+			}
+			if err := runMerge(r, os.Args[2:], log); err != nil {
 				log.Error("merge failed", "err", err)
 				os.Exit(1)
 			}
@@ -100,8 +106,19 @@ func main() {
 			}
 			return
 		case "pr":
-			if err := runPR(os.Args[2:], log); err != nil {
+			r, _, err := loadSiteRepo()
+			if err != nil {
+				log.Error("pr: load site repo", "err", err)
+				os.Exit(1)
+			}
+			if err := runPR(r, os.Args[2:], log); err != nil {
 				log.Error("pr failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		case "lib":
+			if err := runLib(os.Args[2:], log); err != nil {
+				log.Error("lib failed", "err", err)
 				os.Exit(1)
 			}
 			return
@@ -133,6 +150,11 @@ const usageText = `usage:
   homa pr show [<branch>]        diff + commits for a PR branch (no arg = single open PR)
   homa pr merge [<branch>]       git-merge a PR branch into main (no arg = single open PR)
   homa pr close [<branch>]       delete a PR branch without merging (no arg = single open PR)
+
+  homa lib init                  one-time: git-init data/library + initial commit
+  homa lib pr {list|show|merge|close} [<branch>]
+                                 same PR workflow as 'homa pr', but on the library repo
+  homa lib merge <userid>        git-merge library user/<userid> branch → main
 `
 
 func run(configPath string, log *slog.Logger) error {
@@ -404,6 +426,7 @@ func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, p
 		AnthropicAPIKey:       apiKey,
 		ClaudeCredentialsPath: credsPath,
 		LibraryDir:            cfg.LibraryDir,
+		LibraryBranchesDir:    cfg.LibraryBranchesDir,
 		UserConfigsDir:        userConfigsDir,
 		NousConfigTemplate:    nousConfigTemplate,
 		CodeServerSecret:      codeServerSecret,
@@ -473,40 +496,37 @@ var userIDPattern = regexp.MustCompile(`^[a-f0-9]{8}$`)
 //
 // Admin-only; runs on the host. Conflicts on step 2 surface as git's own
 // non-zero exit + stderr — operator resolves by hand.
-func runMerge(args []string, log *slog.Logger) error {
+// runMerge implements `homa merge <userid>` (site) and `homa lib merge
+// <userid>` (library): merges the user/<userid> branch of the given
+// repo's per-user worktree into main. Step 1 auto-commits any dirty
+// state in the worktree; step 2 git-merges into main.
+func runMerge(r *repo.Repo, args []string, log *slog.Logger) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: homa merge <userid>")
+		return fmt.Errorf("usage: homa %s <userid>", mergeCommandLabel(r))
 	}
 	userID := args[0]
 	// If the user accidentally passed a PR branch name (pr/<userid>/<topic>)
 	// to `homa merge`, route to `homa pr merge` instead. Same intent, just
 	// the wrong subcommand. Saves the operator from re-typing.
 	if prflow.IsPRBranch(userID) {
-		log.Info("merge: PR branch name detected — routing to pr merge", "branch", userID)
-		return runPRMerge(args, log)
+		log.Info("merge: PR branch name detected — routing to pr merge",
+			"branch", userID, "repo", r.Name)
+		return runPRMerge(r, args, log)
 	}
 	if !userIDPattern.MatchString(userID) {
 		return fmt.Errorf("invalid userid %q (want 8 lowercase hex chars). "+
-			"For PR branches use: homa pr merge <branch>", userID)
+			"For PR branches use: homa %s pr merge <branch>", userID, r.Name)
 	}
 
-	cfg, err := config.Load(defaultConfigPath())
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	siteDir, err := filepath.Abs(cfg.SiteTemplateDir)
-	if err != nil {
-		return fmt.Errorf("abs site_template_dir: %w", err)
-	}
-	branchesDir, err := filepath.Abs(cfg.BranchesDir)
-	if err != nil {
-		return fmt.Errorf("abs branches_dir: %w", err)
-	}
-	worktreePath := filepath.Join(branchesDir, userID)
+	worktreePath := r.UserWorktreeDir(userID)
 
 	// Step 1: auto-commit. Best-effort store lookup for a real email;
 	// fall back to a synthetic identity so the merge still works if the
 	// DB is missing / locked / etc.
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 	commitEmail := "homa-bot@homa.local"
 	commitName := "homa-bot (user " + userID + ")"
 	if st, err := store.Open(cfg.DBPath()); err == nil {
@@ -526,17 +546,26 @@ func runMerge(args []string, log *slog.Logger) error {
 	}
 
 	// Step 2: merge into main.
-	branch := "user/" + userID
-	log.Info("merge: starting", "branch", branch, "into", "main", "repo", siteDir)
-	cmd := exec.Command("git", "-C", siteDir, "merge", "--no-ff",
+	branch := r.UserBranch(userID)
+	log.Info("merge: starting", "branch", branch, "into", r.BaseBranch,
+		"repo", r.MainDir, "repo_name", r.Name)
+	cmd := exec.Command("git", "-C", r.MainDir, "merge", "--no-ff",
 		"-m", "homa: merge "+branch, branch)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git merge: %w (resolve conflicts in %s then retry)", err, siteDir)
+		return fmt.Errorf("git merge: %w (resolve conflicts in %s then retry)", err, r.MainDir)
 	}
-	log.Info("merge: success — mainsite vite will HMR to the new files")
+	log.Info("merge: success", "repo", r.Name)
 	return nil
+}
+
+// mergeCommandLabel returns "merge" for site, "lib merge" for library.
+func mergeCommandLabel(r *repo.Repo) string {
+	if r.Name == "site" {
+		return "merge"
+	}
+	return r.Name + " merge"
 }
 
 // runList implements `homa list`: prints every user as
@@ -912,36 +941,156 @@ func backfillCodeServerPorts(ctx context.Context, st *store.Store, ports *provis
 // are pull requests. No DB, no API. `homa pr {list,show,merge,close}` is
 // the operator's interface. See internal/prflow/.
 
-func runPR(args []string, log *slog.Logger) error {
+// runLib is the `homa lib …` dispatcher. Loads the library repo once
+// and routes to the same shared core commands the site uses.
+//
+//   homa lib init                  one-time: git-init data/library + commit
+//   homa lib pr {list,show,...}    PR workflow on library
+//   homa lib merge <userid>        merge user/<userid> into library main
+func runLib(args []string, log *slog.Logger) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: homa pr {list|show|merge|close} [<branch>]")
+		return fmt.Errorf("usage: homa lib {init|pr|merge} ...")
+	}
+	if args[0] == "init" {
+		return runLibInit(args[1:], log)
+	}
+	r, _, err := loadLibraryRepo()
+	if err != nil {
+		return err
 	}
 	switch args[0] {
-	case "list":
-		return runPRList(args[1:], log)
-	case "show":
-		return runPRShow(args[1:], log)
+	case "pr":
+		return runPR(r, args[1:], log)
 	case "merge":
-		return runPRMerge(args[1:], log)
-	case "close":
-		return runPRClose(args[1:], log)
+		return runMerge(r, args[1:], log)
 	default:
-		return fmt.Errorf("unknown pr subcommand %q; want list/show/merge/close", args[0])
+		return fmt.Errorf("unknown lib subcommand %q; want init/pr/merge", args[0])
 	}
 }
 
-// runPRList enumerates pr/* branches with author + stats vs main.
-func runPRList(args []string, log *slog.Logger) error {
+// runLibInit initialises cfg.LibraryDir as a git repository. Idempotent
+// — if .git already exists, returns success without changing anything.
+// Run once at setup; the per-user library worktree machinery depends
+// on the library being a valid git repo.
+func runLibInit(args []string, log *slog.Logger) error {
 	if len(args) > 0 {
-		return fmt.Errorf("usage: homa pr list (takes no args)")
+		return fmt.Errorf("usage: homa lib init (takes no args)")
 	}
 	cfg, err := config.Load(defaultConfigPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
+	libDir, err := filepath.Abs(cfg.LibraryDir)
+	if err != nil {
+		return fmt.Errorf("abs library_dir: %w", err)
+	}
+	if _, err := os.Stat(libDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(libDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir library_dir: %w", err)
+		}
+	}
+	gitDir := filepath.Join(libDir, ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		fmt.Printf("library already initialised: %s\n", libDir)
+		return nil
+	}
 
-	prs, err := prflow.List(cfg.GitBin, siteDir, "main")
+	runGit := func(args ...string) error {
+		cmd := exec.Command(cfg.GitBin, append([]string{"-C", libDir}, args...)...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	log.Info("library init: starting", "dir", libDir)
+	if err := runGit("init", "-b", "main"); err != nil {
+		return fmt.Errorf("git init: %w", err)
+	}
+	// Identity for the initial commit. Operator's git config usually
+	// covers this, but if not, we don't want the init to fail.
+	if err := runGit("config", "user.email", "homa-bot@homa.local"); err != nil {
+		return fmt.Errorf("git config email: %w", err)
+	}
+	if err := runGit("config", "user.name", "homa-bot"); err != nil {
+		return fmt.Errorf("git config name: %w", err)
+	}
+	if err := runGit("add", "-A"); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+	// Allow empty initial commit so init succeeds even when the library
+	// has no content yet (fresh installation).
+	if err := runGit("commit", "--allow-empty", "-m", "library: initial commit (homa lib init)"); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	fmt.Printf("library initialised: %s\n", libDir)
+	return nil
+}
+
+// runPR is the repo-agnostic PR-workflow dispatcher. Both `homa pr ...`
+// (site) and `homa lib pr ...` (library) route through here with a
+// pre-loaded *repo.Repo.
+func runPR(r *repo.Repo, args []string, log *slog.Logger) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: homa %s {list|show|merge|close} [<branch>]", prCommandLabel(r))
+	}
+	switch args[0] {
+	case "list":
+		return runPRList(r, args[1:], log)
+	case "show":
+		return runPRShow(r, args[1:], log)
+	case "merge":
+		return runPRMerge(r, args[1:], log)
+	case "close":
+		return runPRClose(r, args[1:], log)
+	default:
+		return fmt.Errorf("unknown pr subcommand %q; want list/show/merge/close", args[0])
+	}
+}
+
+// prCommandLabel renders the CLI-prefix the user typed to get into
+// this PR dispatcher. "pr" for site, "lib pr" for library. Lets error
+// messages echo the user's invocation accurately.
+func prCommandLabel(r *repo.Repo) string {
+	if r.Name == "site" {
+		return "pr"
+	}
+	return r.Name + " pr"
+}
+
+// loadSiteRepo + loadLibraryRepo are the two concrete-repo constructors
+// the CLI dispatchers use to turn config into a *repo.Repo. Centralised
+// here so the dispatchers don't repeat the load+abs dance.
+func loadSiteRepo() (*repo.Repo, *config.Config, error) {
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	r, err := repo.Site(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, cfg, nil
+}
+
+func loadLibraryRepo() (*repo.Repo, *config.Config, error) {
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	r, err := repo.Library(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r, cfg, nil
+}
+
+// runPRList enumerates pr/* branches with author + stats vs main.
+func runPRList(r *repo.Repo, args []string, log *slog.Logger) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: homa %s list (takes no args)", prCommandLabel(r))
+	}
+
+	prs, err := prflow.List(r.GitBin, r.MainDir, r.BaseBranch)
 	if err != nil {
 		return fmt.Errorf("list PR branches: %w", err)
 	}
@@ -953,6 +1102,7 @@ func runPRList(args []string, log *slog.Logger) error {
 	// Resolve usernames best-effort. If store unavailable, fall back
 	// to userid in the author column.
 	usernames := map[string]string{}
+	cfg, _ := config.Load(defaultConfigPath()) // safe — we got here, config exists
 	if st, err := store.Open(cfg.DBPath()); err == nil {
 		defer st.Close()
 		for _, p := range prs {
@@ -991,16 +1141,11 @@ func runPRList(args []string, log *slog.Logger) error {
 // `verb` ("show"/"merge"/"close") customizes the hint message. Returns
 // non-nil error only on config / git read failures (the no-PR /
 // multi-PR cases are NOT errors — caller checks branch=="" and exits).
-func resolvePRBranch(args []string, verb string, log *slog.Logger) (string, error) {
+func resolvePRBranch(r *repo.Repo, args []string, verb string, log *slog.Logger) (string, error) {
 	if len(args) >= 1 {
 		return args[0], nil
 	}
-	cfg, err := config.Load(defaultConfigPath())
-	if err != nil {
-		return "", err
-	}
-	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
-	prs, err := prflow.List(cfg.GitBin, siteDir, "main")
+	prs, err := prflow.List(r.GitBin, r.MainDir, r.BaseBranch)
 	if err != nil {
 		return "", fmt.Errorf("list PR branches: %w", err)
 	}
@@ -1012,14 +1157,14 @@ func resolvePRBranch(args []string, verb string, log *slog.Logger) (string, erro
 		return prs[0].Name, nil
 	default:
 		fmt.Fprintf(os.Stderr, "multiple PR branches open; pass one to '%s' explicitly:\n\n", verb)
-		return "", runPRList(nil, log)
+		return "", runPRList(r, nil, log)
 	}
 }
 
 // runPRShow prints the diff + commit list for a PR branch.
 // Bare invocation = single-PR shortcut; see resolvePRBranch.
-func runPRShow(args []string, log *slog.Logger) error {
-	branch, err := resolvePRBranch(args, "show", log)
+func runPRShow(r *repo.Repo, args []string, log *slog.Logger) error {
+	branch, err := resolvePRBranch(r, args, "show", log)
 	if err != nil || branch == "" {
 		return err
 	}
@@ -1027,25 +1172,21 @@ func runPRShow(args []string, log *slog.Logger) error {
 	if !ok {
 		return fmt.Errorf("not a PR branch (expected pr/<userid>/<topic>): %s", branch)
 	}
-	cfg, err := config.Load(defaultConfigPath())
-	if err != nil {
-		return err
-	}
-	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
 
-	if !prflow.BranchExists(cfg.GitBin, siteDir, branch) {
+	if !prflow.BranchExists(r.GitBin, r.MainDir, branch) {
 		return fmt.Errorf("branch does not exist: %s", branch)
 	}
 
-	stats, err := prflow.DiffStats(cfg.GitBin, siteDir, branch, "main")
+	stats, err := prflow.DiffStats(r.GitBin, r.MainDir, branch, r.BaseBranch)
 	if err != nil {
 		return err
 	}
-	commits, _ := prflow.CommitLog(cfg.GitBin, siteDir, branch, "main")
-	files, _ := prflow.FilesChangedList(cfg.GitBin, siteDir, branch, "main")
+	commits, _ := prflow.CommitLog(r.GitBin, r.MainDir, branch, r.BaseBranch)
+	files, _ := prflow.FilesChangedList(r.GitBin, r.MainDir, branch, r.BaseBranch)
 
 	// Resolve author username best-effort.
 	author := pr.UserID
+	cfg, _ := config.Load(defaultConfigPath())
 	if st, err := store.Open(cfg.DBPath()); err == nil {
 		defer st.Close()
 		if u, err := st.GetUserByID(context.Background(), pr.UserID); err == nil && u.Username != "" {
@@ -1056,8 +1197,9 @@ func runPRShow(args []string, log *slog.Logger) error {
 	fmt.Printf("PR:        %s\n", branch)
 	fmt.Printf("Topic:     %s\n", pr.Topic)
 	fmt.Printf("Author:    %s\n", author)
-	fmt.Printf("Vs main:   %d commits ahead, %d files changed (+%d/-%d)\n",
-		stats.CommitsAhead, stats.FilesChanged, stats.Insertions, stats.Deletions)
+	fmt.Printf("Repo:      %s\n", r.Name)
+	fmt.Printf("Vs %-6s   %d commits ahead, %d files changed (+%d/-%d)\n",
+		r.BaseBranch+":", stats.CommitsAhead, stats.FilesChanged, stats.Insertions, stats.Deletions)
 	fmt.Println()
 	if len(commits) > 0 {
 		fmt.Println("Commits:")
@@ -1073,8 +1215,9 @@ func runPRShow(args []string, log *slog.Logger) error {
 		}
 		fmt.Println()
 	}
-	fmt.Printf("merge: homa pr merge %s\n", branch)
-	fmt.Printf("close: homa pr close %s\n", branch)
+	label := prCommandLabel(r)
+	fmt.Printf("merge: homa %s merge %s\n", label, branch)
+	fmt.Printf("close: homa %s close %s\n", label, branch)
 	return nil
 }
 
@@ -1083,8 +1226,8 @@ func runPRShow(args []string, log *slog.Logger) error {
 // Does NOT auto-commit user worktree state (the PR branch is the
 // source of truth; uncommitted state in user/<id>/ worktree is
 // unrelated).
-func runPRMerge(args []string, log *slog.Logger) error {
-	branch, err := resolvePRBranch(args, "merge", log)
+func runPRMerge(r *repo.Repo, args []string, log *slog.Logger) error {
+	branch, err := resolvePRBranch(r, args, "merge", log)
 	if err != nil || branch == "" {
 		return err
 	}
@@ -1092,49 +1235,40 @@ func runPRMerge(args []string, log *slog.Logger) error {
 	if !ok {
 		return fmt.Errorf("not a PR branch: %s", branch)
 	}
-	cfg, err := config.Load(defaultConfigPath())
-	if err != nil {
-		return err
-	}
-	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
-	if !prflow.BranchExists(cfg.GitBin, siteDir, branch) {
+	if !prflow.BranchExists(r.GitBin, r.MainDir, branch) {
 		return fmt.Errorf("branch does not exist: %s", branch)
 	}
 
-	log.Info("pr merge: starting", "branch", branch, "user_id", pr.UserID, "into", "main", "repo", siteDir)
-	cmd := exec.Command(cfg.GitBin, "-C", siteDir, "merge", "--no-ff",
+	log.Info("pr merge: starting", "branch", branch, "user_id", pr.UserID,
+		"into", r.BaseBranch, "repo", r.MainDir, "repo_name", r.Name)
+	cmd := exec.Command(r.GitBin, "-C", r.MainDir, "merge", "--no-ff",
 		"-m", "homa: merge "+branch, branch)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("git merge: %w (resolve conflicts in %s, then 'git -C %s commit')",
-			err, siteDir, siteDir)
+			err, r.MainDir, r.MainDir)
 	}
-	log.Info("pr merge: success — mainsite vite will HMR", "branch", branch)
+	log.Info("pr merge: success", "branch", branch, "repo", r.Name)
 	return nil
 }
 
 // runPRClose deletes a PR branch without merging.
-func runPRClose(args []string, log *slog.Logger) error {
-	branch, err := resolvePRBranch(args, "close", log)
+func runPRClose(r *repo.Repo, args []string, log *slog.Logger) error {
+	branch, err := resolvePRBranch(r, args, "close", log)
 	if err != nil || branch == "" {
 		return err
 	}
 	if _, ok := prflow.ParsePRBranch(branch); !ok {
 		return fmt.Errorf("not a PR branch: %s", branch)
 	}
-	cfg, err := config.Load(defaultConfigPath())
-	if err != nil {
-		return err
-	}
-	siteDir, _ := filepath.Abs(cfg.SiteTemplateDir)
-	if !prflow.BranchExists(cfg.GitBin, siteDir, branch) {
+	if !prflow.BranchExists(r.GitBin, r.MainDir, branch) {
 		return fmt.Errorf("branch does not exist: %s", branch)
 	}
-	if err := prflow.DeleteBranch(cfg.GitBin, siteDir, branch); err != nil {
+	if err := prflow.DeleteBranch(r.GitBin, r.MainDir, branch); err != nil {
 		return fmt.Errorf("delete branch: %w", err)
 	}
-	log.Info("pr close: deleted", "branch", branch)
+	log.Info("pr close: deleted", "branch", branch, "repo", r.Name)
 	return nil
 }
 

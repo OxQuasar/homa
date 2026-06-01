@@ -1,4 +1,4 @@
-// Server-side gate for the I Ching research browser.
+// Server-side gate for the MEV research browser.
 // See $lib/corpusAuth.ts for the rationale.
 
 import { corpusAuthLoad } from '$lib/corpusAuth';

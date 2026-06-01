@@ -2,24 +2,23 @@
   import MysteryPage from '$lib/MysteryPage.svelte';
 
   const items = [
-    { slug: 'financial-markets', title: 'Financial Markets', accent: '' },
+    { slug: 'mev', title: 'MEV', accent: 'Maximal Extractable Value' },
   ];
 </script>
 
 <MysteryPage
-  title="Modern Marvels"
-  backHref="/mysteries"
-  bgImage="/images/modern-marvels-bg.jpg"
-  tone="ambient"
+  title="Financial Markets"
+  backHref="/mysteries/modern-marvels"
+  tone="dark"
 >
   <header>
-    <h1>Modern Marvels</h1>
+    <h1>Financial Markets</h1>
   </header>
 
   <ul class="items">
     {#each items as it}
       <li>
-        <a href={`/mysteries/modern-marvels/${it.slug}`}>
+        <a href={`/mysteries/modern-marvels/financial-markets/${it.slug}`}>
           <h2>
             {it.title}
             {#if it.accent}<span class="accent">{it.accent}</span>{/if}
