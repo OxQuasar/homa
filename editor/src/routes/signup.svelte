@@ -113,7 +113,7 @@
           learnings and wisdom from the great lost civilizations. We
           research the present — the structure of the financial markets
           and the modern system. We fund ourselves and direct ourselves.
-          And we direct the future.
+          We direct the future.
         </p>
 
         <p class="m-close">
@@ -277,15 +277,21 @@
     white-space: pre-line;
     margin-bottom: 2rem;
   }
-  /* Closing question. Bolder + slightly larger so it lands. The CTA
-     button visually answers it. */
+  /* Closing question — the moment the reader decides. Display serif
+     (Cinzel, Roman-inscription style), heavier weight, wider tracking,
+     centered. Visually weightier than the body so the eye stops here
+     and the 'I'm in' CTA below answers it. */
   .m-body .m-close {
-    margin-top: 1.75rem;
-    padding-top: 1.25rem;
-    border-top: 1px solid #eee;
-    color: #222;
+    margin-top: 2.25rem;
+    padding-top: 1.75rem;
+    border-top: 1px solid #ddd;
+    font-family: 'Cinzel', 'Cormorant Garamond', Georgia, serif;
     font-weight: 500;
-    font-size: 1.1rem;
+    font-size: 1.15rem;
+    line-height: 1.6;
+    letter-spacing: 0.04em;
+    color: #1a1a1a;
+    text-align: center;
   }
   .m-cta {
     display: flex;
