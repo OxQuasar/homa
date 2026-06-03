@@ -1022,3 +1022,23 @@ func TestForgot_RateLimit(t *testing.T) {
 		t.Errorf("3rd: got %d, want 429", r.StatusCode)
 	}
 }
+
+// TestForgot_NoteTooLong — the 500-char cap is enforced server-side
+// (matches the editor's maxlength). Boundary check.
+func TestForgot_NoteTooLong(t *testing.T) {
+	env := newTestEnv(t)
+	long := strings.Repeat("x", 501)
+	resp := env.post("/forgot", map[string]string{
+		"email": "a@b.co",
+		"note":  long,
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", resp.StatusCode)
+	}
+	// And no row was inserted.
+	rows, _ := env.store.ListPasswordResetRequests(context.Background(), 30)
+	if len(rows) != 0 {
+		t.Errorf("rows after rejected request: %d", len(rows))
+	}
+}

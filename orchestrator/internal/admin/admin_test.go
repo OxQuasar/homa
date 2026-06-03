@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/skipper/homa/orchestrator/internal/admin"
@@ -360,7 +361,7 @@ func TestResetPassword_Happy(t *testing.T) {
 	r.store.CreateWebSession(context.Background(), "tok-target-padding-padding-padding", "approved", 9_999_999_999)
 
 	resp := r.do(t, "POST", "/api/admin/password-resets/"+
-		string(rune('0'+id))+"/reset", "adminxxx", nil)
+		strconv.FormatInt(id, 10)+"/reset", "adminxxx", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reset: %d", resp.StatusCode)
@@ -389,7 +390,7 @@ func TestResetPassword_NoMatchedUser(t *testing.T) {
 	r := newRig(t)
 	id := seedResetRequest(t, r, "ghost@x", "") // empty user_id — phantom email
 	resp := r.do(t, "POST", "/api/admin/password-resets/"+
-		string(rune('0'+id))+"/reset", "adminxxx", nil)
+		strconv.FormatInt(id, 10)+"/reset", "adminxxx", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("got %d, want 400 (can't reset without a user)", resp.StatusCode)
@@ -400,7 +401,7 @@ func TestDismissPasswordReset(t *testing.T) {
 	r := newRig(t)
 	id := seedResetRequest(t, r, "ghost@x", "")
 	resp := r.do(t, "POST", "/api/admin/password-resets/"+
-		string(rune('0'+id))+"/dismiss", "adminxxx", nil)
+		strconv.FormatInt(id, 10)+"/dismiss", "adminxxx", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("dismiss: %d", resp.StatusCode)
@@ -418,9 +419,50 @@ func TestResetPassword_NonAdmin(t *testing.T) {
 	r := newRig(t)
 	id := seedResetRequest(t, r, "approved@x", "approved")
 	resp := r.do(t, "POST", "/api/admin/password-resets/"+
-		string(rune('0'+id))+"/reset", "approved", nil) // self, non-admin
+		strconv.FormatInt(id, 10)+"/reset", "approved", nil) // self, non-admin
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("non-admin reset: %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestResetPassword_AlreadyResolved — guard against double-reset that
+// would issue a second password for the same request. The handler
+// checks ResolvedAt > 0 and 400s.
+func TestResetPassword_AlreadyResolved(t *testing.T) {
+	r := newRig(t)
+	id := seedResetRequest(t, r, "approved@x", "approved")
+	// First reset succeeds.
+	resp1 := r.do(t, "POST", "/api/admin/password-resets/"+
+		strconv.FormatInt(id, 10)+"/reset", "adminxxx", nil)
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first reset: %d", resp1.StatusCode)
+	}
+	// Second reset on the same row 400s.
+	resp2 := r.do(t, "POST", "/api/admin/password-resets/"+
+		strconv.FormatInt(id, 10)+"/reset", "adminxxx", nil)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("second reset: got %d, want 400", resp2.StatusCode)
+	}
+}
+
+// TestDismissPasswordReset_AlreadyResolved — same guard on the
+// dismiss endpoint.
+func TestDismissPasswordReset_AlreadyResolved(t *testing.T) {
+	r := newRig(t)
+	id := seedResetRequest(t, r, "ghost@x", "")
+	r1 := r.do(t, "POST", "/api/admin/password-resets/"+
+		strconv.FormatInt(id, 10)+"/dismiss", "adminxxx", nil)
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("first dismiss: %d", r1.StatusCode)
+	}
+	r2 := r.do(t, "POST", "/api/admin/password-resets/"+
+		strconv.FormatInt(id, 10)+"/dismiss", "adminxxx", nil)
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusBadRequest {
+		t.Errorf("second dismiss: got %d, want 400", r2.StatusCode)
 	}
 }
