@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Defaults applied when the config file is missing or fields are unset.
@@ -193,6 +194,23 @@ type Config struct {
 	// user. Set to 0 to disable. Default 5min.
 	UsageLogIntervalMinutes int `json:"usage_log_interval_minutes"`
 
+	// LLMProxyListenAddr — host-side listen address for the LLM auth
+	// proxy. Typical: ":8118". When empty, the proxy is disabled and
+	// containers fall back to legacy bind-mount-credentials.
+	//
+	// User containers reach this via host.containers.internal:<port>.
+	// LLMProxyContainerURL configures what the container sees; when
+	// that field is empty, the orchestrator derives the URL from this
+	// addr's port + "http://host.containers.internal:".
+	LLMProxyListenAddr string `json:"llm_proxy_listen_addr"`
+
+	// LLMProxyContainerURL — the base URL containers use to reach the
+	// proxy. Stamped into each user's nous config as the anthropic
+	// provider's base_url. Typical:
+	// "http://host.containers.internal:8118". When empty AND
+	// LLMProxyListenAddr is set, derived as above.
+	LLMProxyContainerURL string `json:"llm_proxy_container_url"`
+
 	// UploadMaxBytes caps a single POST /upload request body. Larger
 	// uploads return 413 cleanly without buffering the rejected body.
 	// 0 → upload.DefaultMaxBytes (10 MB).
@@ -347,6 +365,16 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.UsageLogIntervalMinutes == 0 {
 		cfg.UsageLogIntervalMinutes = defaultUsageLogIntervalMinutes
+	}
+	// Derive the container-side URL from the listen addr if the operator
+	// didn't pin it explicitly. ":8118" → "http://host.containers.internal:8118".
+	if cfg.LLMProxyListenAddr != "" && cfg.LLMProxyContainerURL == "" {
+		port := strings.TrimPrefix(cfg.LLMProxyListenAddr, ":")
+		// If addr has a host:port form (e.g. "0.0.0.0:8118") take the part after the colon.
+		if i := strings.LastIndex(port, ":"); i >= 0 {
+			port = port[i+1:]
+		}
+		cfg.LLMProxyContainerURL = "http://host.containers.internal:" + port
 	}
 	// UserConfigsDir defaults to "configs" *under DataDir* (so it ends up
 	// at e.g. data/configs/). Resolved to absolute in main.go.

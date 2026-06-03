@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/skipper/homa/orchestrator/internal/codeserver"
@@ -75,12 +77,23 @@ type PodmanProvisioner struct {
 	// get a /library mount at all).
 	LibraryBranchesDir string
 
+	// LLMProxyURL is the URL containers send LLM API requests to,
+	// instead of api.anthropic.com directly. When non-empty:
+	//   - The Claude Code credentials file is NOT bind-mounted into
+	//     user containers (closes the OAuth-token exfil hole — a
+	//     misaligned sandbox LLM has no filesystem path to the token).
+	//   - The per-user nous config is templated with this as base_url,
+	//     so nous in the container routes its API calls through the
+	//     orchestrator-side proxy which adds auth.
+	// Empty preserves the legacy bind-mount-credentials behavior.
+	// Typical value: "http://host.containers.internal:8118"
+	LLMProxyURL string
+
 	// ClaudeCredentialsPath is an absolute host path to a Claude Code
-	// `.credentials.json`. When non-empty AND the file exists at
-	// Provision/EnsureRunning time, the file is bind-mounted read-only into
-	// the sandbox at /root/.claude/.credentials.json so nous-in-sandbox uses
-	// the OAuth chain (and inherits host token refreshes automatically).
-	// Empty / missing → fall back to env-var-only auth.
+	// `.credentials.json`. Used by EITHER the legacy bind-mount path
+	// (when LLMProxyURL is empty) OR the proxy (which reads the file
+	// directly to source auth headers). At least one path needs the
+	// file to exist for sandbox LLM calls to authenticate.
 	ClaudeCredentialsPath string
 	// UserConfigsDir is an absolute host directory holding per-user nous
 	// configs. Provision/EnsureRunning ensure
@@ -146,6 +159,14 @@ const libraryContainerPath = "/library"
 // code-server.
 func (pp *PodmanProvisioner) buildContainerEnv(ctx context.Context, userID string, codeServerAllocated bool) map[string]string {
 	env := map[string]string{"ANTHROPIC_API_KEY": pp.AnthropicAPIKey}
+	// LLM-proxy mode: nous has no creds and no real API key. Give it
+	// a placeholder ANTHROPIC_API_KEY just so its entrypoint precondition
+	// passes + nous can configure a provider. nous's requests go to the
+	// proxy (via base_url in the per-user nous config); the proxy strips
+	// any client-supplied auth and injects the operator's real bearer.
+	if pp.LLMProxyURL != "" && env["ANTHROPIC_API_KEY"] == "" {
+		env["ANTHROPIC_API_KEY"] = "via-llmproxy-no-real-key-needed"
+	}
 	if codeServerAllocated && len(pp.CodeServerSecret) > 0 {
 		env["HOMA_CODE_SERVER_PASSWORD"] = codeserver.PasswordFor(pp.CodeServerSecret, userID)
 	}
@@ -391,7 +412,11 @@ func (pp *PodmanProvisioner) extraMounts(userID string) []sandbox.Mount {
 			Src: cfgPath, Dst: nousConfigContainerPath, ReadOnly: true,
 		})
 	}
-	if pp.ClaudeCredentialsPath != "" {
+	// Credentials bind-mount — LEGACY path only. When the LLM auth
+	// proxy is configured, the container does NOT get credentials
+	// (proxy holds them on the host and injects auth at the boundary).
+	// This is the line that closes the OAuth-exfil hole.
+	if pp.ClaudeCredentialsPath != "" && pp.LLMProxyURL == "" {
 		if _, err := os.Stat(pp.ClaudeCredentialsPath); err == nil {
 			out = append(out, sandbox.Mount{
 				Src:      pp.ClaudeCredentialsPath,
@@ -546,10 +571,26 @@ func (pp *PodmanProvisioner) ensureUserConfig(userID string) (string, error) {
 		return "", nil
 	}
 	cfgPath := filepath.Join(pp.UserConfigsDir, userID, "config.json")
+	existed := false
 	if _, err := os.Stat(cfgPath); err == nil {
-		return cfgPath, nil
+		existed = true
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("stat user config: %w", err)
+	}
+	if existed && pp.LLMProxyURL == "" {
+		// Legacy path — pre-existing config, no proxy to wire. Leave alone.
+		return cfgPath, nil
+	}
+	if existed && pp.LLMProxyURL != "" {
+		// Pre-existing config + proxy configured. Check whether the
+		// base_url is already in place. If yes, no-op; if no, rewrite
+		// so the user picks up proxy routing on next container start.
+		data, _ := os.ReadFile(cfgPath)
+		if strings.Contains(string(data), `"base_url"`) {
+			return cfgPath, nil
+		}
+		pp.Log.Info("rewriting per-user nous config to inject proxy base_url",
+			"user_id", userID, "proxy_url", pp.LLMProxyURL)
 	}
 	if pp.NousConfigTemplate == "" {
 		return "", fmt.Errorf("user config missing and no template configured")
@@ -558,6 +599,16 @@ func (pp *PodmanProvisioner) ensureUserConfig(userID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read template %s: %w", pp.NousConfigTemplate, err)
 	}
+	// Inject base_url into the anthropic provider when the proxy is
+	// configured. Cheap text-level patch: the template has a known
+	// shape (the provider block starts with `"anthropic": {`).
+	if pp.LLMProxyURL != "" {
+		patched, err := injectAnthropicBaseURL(data, pp.LLMProxyURL)
+		if err != nil {
+			return "", fmt.Errorf("inject base_url: %w", err)
+		}
+		data = patched
+	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir user config dir: %w", err)
 	}
@@ -565,7 +616,8 @@ func (pp *PodmanProvisioner) ensureUserConfig(userID string) (string, error) {
 		return "", fmt.Errorf("seed user config: %w", err)
 	}
 	pp.Log.Info("seeded per-user nous config",
-		"user_id", userID, "path", cfgPath, "from", pp.NousConfigTemplate)
+		"user_id", userID, "path", cfgPath, "from", pp.NousConfigTemplate,
+		"proxy", pp.LLMProxyURL)
 	return cfgPath, nil
 }
 
@@ -798,6 +850,39 @@ func (pp *PodmanProvisioner) EnsureRunning(ctx context.Context, userID string) e
 
 	log.Info("ensure: done", "elapsed", time.Since(startedAt).Round(time.Millisecond))
 	return nil
+}
+
+// injectAnthropicBaseURL adds "base_url": "<url>" to the anthropic
+// provider block in nous.config.json. Uses JSON manipulation (not
+// text editing) so it works regardless of formatting / whitespace.
+//
+// The shape we expect:
+//   {
+//     "providers": {
+//       "anthropic": { ... }
+//     }
+//   }
+//
+// If providers.anthropic.base_url already exists, we overwrite it.
+// If the shape doesn't match, returns an error rather than producing
+// silent garbage.
+func injectAnthropicBaseURL(data []byte, baseURL string) ([]byte, error) {
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse template json: %w", err)
+	}
+	providers, ok := root["providers"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("template missing 'providers' object")
+	}
+	anthropic, ok := providers["anthropic"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("template missing 'providers.anthropic' object")
+	}
+	anthropic["base_url"] = baseURL
+	providers["anthropic"] = anthropic
+	root["providers"] = providers
+	return json.MarshalIndent(root, "", "  ")
 }
 
 // Ensure compile-time interface satisfaction.

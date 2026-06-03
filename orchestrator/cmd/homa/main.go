@@ -34,6 +34,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/cors"
 	"github.com/skipper/homa/orchestrator/internal/forum"
 	"github.com/skipper/homa/orchestrator/internal/library"
+	"github.com/skipper/homa/orchestrator/internal/llmproxy"
 	"github.com/skipper/homa/orchestrator/internal/messages"
 	"github.com/skipper/homa/orchestrator/internal/usersapi"
 	"github.com/skipper/homa/orchestrator/internal/lifecycle"
@@ -239,7 +240,11 @@ func run(configPath string, log *slog.Logger) error {
 		log.Info("code-server", "enabled", false)
 	}
 
-	prov := buildProvisioner(cfg, branchesDir, siteTemplateDir, ports, st, codeServerSecret, log)
+	// Resolve creds path early — needed by both buildProvisioner (for
+	// the legacy bind-mount path) AND the LLM auth proxy below.
+	credsPath := resolveClaudeCredentialsPath(cfg.ClaudeCredentialsPath, log)
+
+	prov := buildProvisioner(cfg, branchesDir, siteTemplateDir, ports, st, codeServerSecret, credsPath, log)
 
 	// Sandbox-status tracker fed by /login's async EnsureRunning
 	// goroutine, polled by the editor at /me/sandbox to drive the
@@ -388,6 +393,24 @@ func run(configPath string, log *slog.Logger) error {
 		}()
 	}
 
+	// LLM auth proxy — when configured, listens on a dedicated address
+	// reachable from user containers via host.containers.internal:<port>.
+	// Forwards to api.anthropic.com with the operator's OAuth bearer
+	// token injected. Closes the credentials-exfil hole because the
+	// containers no longer need a bind-mount of the credentials file.
+	if cfg.LLMProxyListenAddr != "" && credsPath != "" {
+		proxy := llmproxy.New(credsPath, log)
+		proxyMux := http.NewServeMux()
+		proxyMux.Handle("/", proxy)
+		proxySrv := &http.Server{Addr: cfg.LLMProxyListenAddr, Handler: proxyMux}
+		go func() {
+			log.Info("llmproxy listening", "addr", cfg.LLMProxyListenAddr, "creds", credsPath)
+			if err := proxySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("llmproxy exited", "err", err)
+			}
+		}()
+	}
+
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", cfg.ListenAddr)
@@ -420,7 +443,7 @@ func run(configPath string, log *slog.Logger) error {
 // ExecRunner-backed services for Podman, and logs the choice. The shared
 // PortAllocator is supplied by the caller so it's been seeded from the users
 // table before any signup hits it.
-func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, ports *provision.PortAllocator, st *store.Store, codeServerSecret []byte, log *slog.Logger) provision.Provisioner {
+func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, ports *provision.PortAllocator, st *store.Store, codeServerSecret []byte, credsPath string, log *slog.Logger) provision.Provisioner {
 	if !cfg.UsePodman {
 		// Stub: just wire the same allocator so test parity holds. Port-start
 		// args are ignored when the allocator is passed in.
@@ -432,8 +455,8 @@ func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, p
 	if apiKey == "" {
 		log.Warn("ANTHROPIC_API_KEY expanded to empty; sandbox API calls will fail until set")
 	}
-
-	credsPath := resolveClaudeCredentialsPath(cfg.ClaudeCredentialsPath, log)
+	// credsPath is now passed in from run() since it's also used by the
+	// LLM proxy. Local removal: kept the comment for trace-friendliness.
 
 	userConfigsDir, err := filepath.Abs(cfg.UserConfigsDir)
 	if err != nil {
@@ -461,6 +484,7 @@ func buildProvisioner(cfg *config.Config, branchesDir, siteTemplateDir string, p
 		CPULimit:              cfg.ContainerCPUs,
 		AnthropicAPIKey:       apiKey,
 		ClaudeCredentialsPath: credsPath,
+		LLMProxyURL:           cfg.LLMProxyContainerURL,
 		LibraryDir:            cfg.LibraryDir,
 		LibraryBranchesDir:    cfg.LibraryBranchesDir,
 		UserConfigsDir:        userConfigsDir,
