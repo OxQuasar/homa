@@ -17,12 +17,6 @@
     <a class="back" href="#/editor">← back to editor</a>
   </header>
 
-  <nav class="toc" aria-label="table of contents">
-    <a href="#editor">Using the editor</a>
-    <a href="#sandbox">Your AI sandbox</a>
-    <a href="#projects">Projects</a>
-  </nav>
-
   <section id="editor" class="g-section">
     <h2>Using the editor</h2>
 
@@ -161,6 +155,16 @@
     font-weight: 600;
     margin: 2rem 0 0.4rem;
     color: #222;
+  }
+  /* › guillemet pointer before each subsection header. Pure CSS via
+     ::before — no markup change, so any future h3 inherits it
+     automatically. Muted color + lighter weight so it gestures
+     without competing with the heading text. */
+  .g-section h3::before {
+    content: '›';
+    margin-right: 0.4em;
+    color: #999;
+    font-weight: 400;
   }
   .g-section p, .g-section ul, .g-section ol {
     margin: 0.6rem 0;
