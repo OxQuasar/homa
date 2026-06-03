@@ -1,6 +1,6 @@
 # Per-user state — not in version control
 /branches/
-/data/
+/data
 
 # Go
 *.exe
