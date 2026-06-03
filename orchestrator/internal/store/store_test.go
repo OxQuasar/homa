@@ -621,3 +621,94 @@ func TestMigrateApprovedBackfillsExistingUsers(t *testing.T) {
 		t.Error("pre-migration user not backfilled to Approved=true (would be locked out)")
 	}
 }
+
+// TestPasswordResetRequest_CRUD — happy path: create with matched user_id,
+// list returns it as pending, get-by-id returns same data, resolve flips
+// the timestamps, list still returns it (within recentResolvedDays) but
+// status reads as resolved.
+func TestPasswordResetRequest_CRUD(t *testing.T) {
+	st := freshStore(t)
+
+	id, err := st.CreatePasswordResetRequest(context.Background(), PasswordResetRequest{
+		Email:     "u@x.io",
+		UserID:    "abcd1234",
+		Note:      "lost my session",
+		ClientIP:  "203.0.113.42",
+		CreatedAt: 1_700_000_000,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("got id=0")
+	}
+
+	got, err := st.GetPasswordResetRequest(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.UserID != "abcd1234" || got.Email != "u@x.io" || got.Note != "lost my session" {
+		t.Errorf("Get: %+v", got)
+	}
+	if got.ResolvedAt != 0 {
+		t.Errorf("freshly created: ResolvedAt=%d, want 0", got.ResolvedAt)
+	}
+
+	list, err := st.ListPasswordResetRequests(context.Background(), 30)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("got %d rows, want 1", len(list))
+	}
+
+	if err := st.ResolvePasswordResetRequest(context.Background(), id, "adminxxx", 1_700_000_999); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	got, _ = st.GetPasswordResetRequest(context.Background(), id)
+	if got.ResolvedAt != 1_700_000_999 || got.ResolvedBy != "adminxxx" {
+		t.Errorf("post-resolve: %+v", got)
+	}
+}
+
+// TestPasswordResetRequest_UserIDNullable — when the email doesn't match
+// a user, we still store the row (no enumeration leak) but UserID is
+// NULL → empty string on read.
+func TestPasswordResetRequest_UserIDNullable(t *testing.T) {
+	st := freshStore(t)
+	_, err := st.CreatePasswordResetRequest(context.Background(), PasswordResetRequest{
+		Email:     "ghost@x.io",
+		UserID:    "", // simulates no-match
+		CreatedAt: 1_700_000_000,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	list, _ := st.ListPasswordResetRequests(context.Background(), 30)
+	if len(list) != 1 {
+		t.Fatalf("got %d rows", len(list))
+	}
+	if list[0].UserID != "" {
+		t.Errorf("UserID: got %q, want empty", list[0].UserID)
+	}
+}
+
+// TestUpdatePasswordHash — happy path + not-found error.
+func TestUpdatePasswordHash(t *testing.T) {
+	st := freshStore(t)
+	u := sampleUser("pwhash01")
+	if err := st.CreateUser(context.Background(), u); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := st.UpdatePasswordHash(context.Background(), u.ID, "$2a$new"); err != nil {
+		t.Errorf("UpdatePasswordHash: %v", err)
+	}
+	got, _ := st.GetUserByID(context.Background(), u.ID)
+	if got.PasswordHash != "$2a$new" {
+		t.Errorf("hash: %q", got.PasswordHash)
+	}
+	// Unknown id → ErrNotFound.
+	if err := st.UpdatePasswordHash(context.Background(), "noexist0", "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing user: got %v, want ErrNotFound", err)
+	}
+}

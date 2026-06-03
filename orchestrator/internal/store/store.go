@@ -201,6 +201,10 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add users.is_admin: %w", err)
 		}
 	}
+	// password_reset_requests is created idempotently by schema.sql via
+	// CREATE TABLE IF NOT EXISTS. No migrate() step needed unless the
+	// table later gains columns.
+
 	// Partial UNIQUE index on non-empty usernames. Lives in migrate()
 	// (not schema.sql) because schema.sql runs BEFORE migrate(), so on a
 	// migrating DB the index would try to apply before the column
@@ -493,6 +497,129 @@ func (s *Store) DeleteWebSessionsByUser(ctx context.Context, userID string) (int
 func (s *Store) DeleteWebSession(ctx context.Context, token string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE token = ?`, token)
 	return err
+}
+
+// UpdatePasswordHash overwrites a user's bcrypt password hash. Used by
+// the admin password-reset flow. Idempotent on identical hashes. Returns
+// ErrNotFound when userID matches no row.
+func (s *Store) UpdatePasswordHash(ctx context.Context, userID, hash string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = ? WHERE id = ?`, hash, userID)
+	return rowsAffectedErr(res, err)
+}
+
+// --- password reset requests ---------------------------------------
+
+// PasswordResetRequest mirrors the password_reset_requests row.
+// UserID is "" when the typed email didn't match any user (we still
+// record the row so the admin sees the attempt; the public response
+// is always success-ish to avoid email enumeration).
+type PasswordResetRequest struct {
+	ID         int64
+	Email      string
+	UserID     string // "" if no matching user at submit time
+	Note       string
+	ClientIP   string
+	CreatedAt  int64
+	ResolvedAt int64  // 0 = pending
+	ResolvedBy string // "" until resolved
+}
+
+// CreatePasswordResetRequest persists a /forgot submission. userID may
+// be empty when the email doesn't match an account. Returns the new row's id.
+func (s *Store) CreatePasswordResetRequest(ctx context.Context, req PasswordResetRequest) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO password_reset_requests (
+			email, user_id, note, client_ip, created_at
+		) VALUES (?, ?, ?, ?, ?)`,
+		req.Email,
+		nullableString(req.UserID),
+		nullableString(req.Note),
+		nullableString(req.ClientIP),
+		req.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListPasswordResetRequests returns pending requests first (resolved_at
+// IS NULL), then resolved ones from the last `recentDaysResolved` days.
+// Both ordered newest-first. Empty slice (not error) when nothing matches.
+func (s *Store) ListPasswordResetRequests(ctx context.Context, recentDaysResolved int) ([]PasswordResetRequest, error) {
+	cutoff := time.Now().Add(-time.Duration(recentDaysResolved) * 24 * time.Hour).Unix()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, email, user_id, note, client_ip, created_at, resolved_at, resolved_by
+		FROM password_reset_requests
+		WHERE resolved_at IS NULL OR resolved_at >= ?
+		ORDER BY (resolved_at IS NOT NULL), created_at DESC`,
+		cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PasswordResetRequest
+	for rows.Next() {
+		var r PasswordResetRequest
+		var userID, note, ip, resolvedBy sql.NullString
+		var resolvedAt sql.NullInt64
+		if err := rows.Scan(&r.ID, &r.Email, &userID, &note, &ip, &r.CreatedAt, &resolvedAt, &resolvedBy); err != nil {
+			return nil, err
+		}
+		r.UserID = userID.String
+		r.Note = note.String
+		r.ClientIP = ip.String
+		r.ResolvedAt = resolvedAt.Int64
+		r.ResolvedBy = resolvedBy.String
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// GetPasswordResetRequest looks up a single request by id. ErrNotFound
+// when no row matches.
+func (s *Store) GetPasswordResetRequest(ctx context.Context, id int64) (*PasswordResetRequest, error) {
+	var r PasswordResetRequest
+	var userID, note, ip, resolvedBy sql.NullString
+	var resolvedAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, email, user_id, note, client_ip, created_at, resolved_at, resolved_by
+		FROM password_reset_requests WHERE id = ?`, id,
+	).Scan(&r.ID, &r.Email, &userID, &note, &ip, &r.CreatedAt, &resolvedAt, &resolvedBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.UserID = userID.String
+	r.Note = note.String
+	r.ClientIP = ip.String
+	r.ResolvedAt = resolvedAt.Int64
+	r.ResolvedBy = resolvedBy.String
+	return &r, nil
+}
+
+// ResolvePasswordResetRequest marks a request handled. adminUserID is
+// stored so the audit trail shows who acted. ErrNotFound if the id
+// doesn't exist. No-op if already resolved (UPDATE just rewrites the
+// timestamp).
+func (s *Store) ResolvePasswordResetRequest(ctx context.Context, id int64, adminUserID string, at int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE password_reset_requests SET resolved_at = ?, resolved_by = ? WHERE id = ?`,
+		at, adminUserID, id)
+	return rowsAffectedErr(res, err)
+}
+
+// nullableString converts "" to sql.NullString{} so the column stores
+// SQL NULL instead of empty string — useful when the schema's nullable
+// columns are subsequently filtered with IS NULL.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // AllUserPorts returns every host port (nous + preview + code-server)

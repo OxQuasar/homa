@@ -4,6 +4,7 @@
   import Editor from './routes/editor.svelte';
   import Admin from './routes/admin.svelte';
   import Guidelines from './routes/guidelines.svelte';
+  import Forgot from './routes/forgot.svelte';
   import { parseRoute } from './lib/route';
 
   // Resolve from both pathname (orchestrator's 302s + direct navigation)
@@ -34,6 +35,8 @@
   <Admin />
 {:else if route === 'guidelines'}
   <Guidelines />
+{:else if route === 'forgot'}
+  <Forgot />
 {:else}
   <Login />
 {/if}

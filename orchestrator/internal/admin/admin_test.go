@@ -316,3 +316,111 @@ func TestCORSPreflight(t *testing.T) {
 		})
 	}
 }
+
+// --- password reset admin endpoints --------------------------------
+
+// seedResetRequest writes one row directly to the store. Mimics what
+// auth.Forgot does in production, with control over each field.
+func seedResetRequest(t *testing.T, r *rig, email, userID string) int64 {
+	t.Helper()
+	id, err := r.store.CreatePasswordResetRequest(context.Background(), store.PasswordResetRequest{
+		Email: email, UserID: userID, CreatedAt: 1_700_000_000,
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return id
+}
+
+func TestListPasswordResets_AdminOnly(t *testing.T) {
+	r := newRig(t)
+	seedResetRequest(t, r, "approved@x", "approved")
+	// Non-admin gets 403.
+	if resp := r.do(t, "GET", "/api/admin/password-resets", "approved", nil); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin: %d, want 403", resp.StatusCode)
+		resp.Body.Close()
+	}
+	// Admin gets the row.
+	resp := r.do(t, "GET", "/api/admin/password-resets", "adminxxx", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin: %d", resp.StatusCode)
+	}
+	var rows []admin.AdminPasswordResetRow
+	json.NewDecoder(resp.Body).Decode(&rows)
+	if len(rows) != 1 || rows[0].Status != "pending" || rows[0].UserID != "approved" {
+		t.Errorf("rows: %+v", rows)
+	}
+}
+
+func TestResetPassword_Happy(t *testing.T) {
+	r := newRig(t)
+	id := seedResetRequest(t, r, "approved@x", "approved")
+	// Original hash + a session in place; both should be invalidated.
+	r.store.CreateWebSession(context.Background(), "tok-target-padding-padding-padding", "approved", 9_999_999_999)
+
+	resp := r.do(t, "POST", "/api/admin/password-resets/"+
+		string(rune('0'+id))+"/reset", "adminxxx", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reset: %d", resp.StatusCode)
+	}
+	var body admin.PasswordResetResultResp
+	json.NewDecoder(resp.Body).Decode(&body)
+	if len(body.NewPassword) < 8 {
+		t.Errorf("password too short: %q", body.NewPassword)
+	}
+	if body.Request.Status != "resolved" {
+		t.Errorf("status: %q", body.Request.Status)
+	}
+	// Hash changed.
+	u, _ := r.store.GetUserByID(context.Background(), "approved")
+	if u.PasswordHash == "$2a" {
+		t.Error("password hash unchanged")
+	}
+	// All sessions for that user are gone.
+	rows, _ := r.store.ListPasswordResetRequests(context.Background(), 30)
+	if rows[0].ResolvedAt == 0 {
+		t.Error("ResolvedAt still 0")
+	}
+}
+
+func TestResetPassword_NoMatchedUser(t *testing.T) {
+	r := newRig(t)
+	id := seedResetRequest(t, r, "ghost@x", "") // empty user_id — phantom email
+	resp := r.do(t, "POST", "/api/admin/password-resets/"+
+		string(rune('0'+id))+"/reset", "adminxxx", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("got %d, want 400 (can't reset without a user)", resp.StatusCode)
+	}
+}
+
+func TestDismissPasswordReset(t *testing.T) {
+	r := newRig(t)
+	id := seedResetRequest(t, r, "ghost@x", "")
+	resp := r.do(t, "POST", "/api/admin/password-resets/"+
+		string(rune('0'+id))+"/dismiss", "adminxxx", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dismiss: %d", resp.StatusCode)
+	}
+	got, _ := r.store.GetPasswordResetRequest(context.Background(), id)
+	if got.ResolvedAt == 0 {
+		t.Error("not resolved")
+	}
+	if got.ResolvedBy != "adminxxx" {
+		t.Errorf("resolved_by: %q", got.ResolvedBy)
+	}
+}
+
+func TestResetPassword_NonAdmin(t *testing.T) {
+	r := newRig(t)
+	id := seedResetRequest(t, r, "approved@x", "approved")
+	resp := r.do(t, "POST", "/api/admin/password-resets/"+
+		string(rune('0'+id))+"/reset", "approved", nil) // self, non-admin
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin reset: %d, want 403", resp.StatusCode)
+	}
+}

@@ -28,7 +28,10 @@
     <label>Password <input type="password" bind:value={password} required autocomplete="current-password" /></label>
     {#if error}<div class="error">{error}</div>{/if}
     <button type="submit" disabled={submitting}>{submitting ? '…' : 'Log in'}</button>
-    <p>No account? <a href="#/signup">Sign up</a></p>
+    <div class="links">
+      <a href="#/signup">Sign up</a>
+      <a href="#/forgot">Forgot password?</a>
+    </div>
   </form>
 </div>
 
@@ -41,5 +44,7 @@
   .error { color: #c00; font-size: 0.9rem; }
   button { padding: 0.6rem; background: #222; color: white; border: none; border-radius: 4px; cursor: pointer; }
   button:disabled { background: #999; }
-  a { color: #06f; }
+  a { color: #06f; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .links { display: flex; justify-content: space-between; font-size: 0.85rem; margin-top: 0.25rem; }
 </style>

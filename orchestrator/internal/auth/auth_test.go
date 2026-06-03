@@ -917,3 +917,108 @@ func TestSignupRateLimit(t *testing.T) {
 		t.Error("missing Retry-After header on 429")
 	}
 }
+
+// TestForgot_HappyPath — POST /forgot with a known email records a row
+// with user_id resolved.
+func TestForgot_HappyPath(t *testing.T) {
+	env := newTestEnv(t)
+	// Seed a user so the email matches.
+	env.post("/signup", map[string]string{
+		"email": "real@x.io", "password": "hunter22", "username": "realuser",
+	}).Body.Close()
+
+	resp := env.post("/forgot", map[string]string{
+		"email": "real@x.io",
+		"note":  "browser wipe",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	var body struct{ OK bool }
+	json.NewDecoder(resp.Body).Decode(&body)
+	if !body.OK {
+		t.Error("ok=false")
+	}
+	// Verify row landed with the matched user_id.
+	reqs, err := env.store.ListPasswordResetRequests(context.Background(), 30)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("rows: %d", len(reqs))
+	}
+	if reqs[0].Email != "real@x.io" || reqs[0].UserID == "" {
+		t.Errorf("row: %+v", reqs[0])
+	}
+}
+
+// TestForgot_UnknownEmail — same success-ish response, row stored with
+// empty user_id. No enumeration leak.
+func TestForgot_UnknownEmail(t *testing.T) {
+	env := newTestEnv(t)
+	resp := env.post("/forgot", map[string]string{"email": "phantom@x.io"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("unknown email status: %d, want 200 (no enumeration leak)", resp.StatusCode)
+	}
+	reqs, _ := env.store.ListPasswordResetRequests(context.Background(), 30)
+	if len(reqs) != 1 || reqs[0].UserID != "" {
+		t.Errorf("rows: %+v", reqs)
+	}
+}
+
+// TestForgot_HoneypotSilentDrop — bot fills website, no row created.
+func TestForgot_HoneypotSilentDrop(t *testing.T) {
+	env := newTestEnv(t)
+	resp := env.post("/forgot", map[string]string{
+		"email":   "anyone@x.io",
+		"website": "https://buy-cheap.example",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("honeypot status: %d", resp.StatusCode)
+	}
+	reqs, _ := env.store.ListPasswordResetRequests(context.Background(), 30)
+	if len(reqs) != 0 {
+		t.Errorf("rows: %+v (honeypot should have dropped)", reqs)
+	}
+}
+
+// TestForgot_RateLimit — after the configured burst, 429.
+func TestForgot_RateLimit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "homa.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	limit := ratelimit.New(2, time.Hour)
+	svc := auth.New(st, nil, false, "", nil, log).WithForgotRateLimit(limit)
+	mux := http.NewServeMux()
+	svc.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	post := func() *http.Response {
+		body, _ := json.Marshal(map[string]string{"email": "a@b.co"})
+		resp, err := http.Post(srv.URL+"/forgot", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		return resp
+	}
+	for i := 0; i < 2; i++ {
+		r := post()
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: %d", i+1, r.StatusCode)
+		}
+	}
+	r := post()
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("3rd: got %d, want 429", r.StatusCode)
+	}
+}

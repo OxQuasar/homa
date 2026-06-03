@@ -147,3 +147,43 @@ export function adminApprove(userId: string): Promise<AdminUserRow> {
 export function adminReject(userId: string): Promise<AdminUserRow> {
   return call('POST', `/api/admin/users/${encodeURIComponent(userId)}/reject`);
 }
+
+// --- Forgot password (public + admin) ------------------------------
+
+export function forgotPassword(email: string, note?: string, website?: string) {
+  // website is the honeypot — humans send '', bots fill it.
+  return call<{ ok: true }>('POST', '/forgot', {
+    email,
+    note: note ?? '',
+    website: website ?? '',
+  });
+}
+
+export interface AdminPasswordResetRow {
+  id: number;
+  email: string;
+  user_id?: string;
+  note?: string;
+  client_ip?: string;
+  created_at: number;
+  resolved_at?: number;
+  resolved_by?: string;
+  status: 'pending' | 'resolved';
+}
+
+export interface PasswordResetResult {
+  request: AdminPasswordResetRow;
+  new_password: string;
+}
+
+export function adminListPasswordResets(): Promise<AdminPasswordResetRow[]> {
+  return call('GET', '/api/admin/password-resets');
+}
+
+export function adminResetPassword(id: number): Promise<PasswordResetResult> {
+  return call('POST', `/api/admin/password-resets/${id}/reset`);
+}
+
+export function adminDismissPasswordReset(id: number): Promise<AdminPasswordResetRow> {
+  return call('POST', `/api/admin/password-resets/${id}/dismiss`);
+}

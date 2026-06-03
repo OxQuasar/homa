@@ -54,6 +54,10 @@ const (
 	// reasonable.
 	applicationMinChars = 20
 	applicationMaxChars = 4000
+
+	// forgotNoteMaxChars bounds the free-form note on /forgot. No
+	// minimum — note is optional.
+	forgotNoteMaxChars = 500
 )
 
 // friendlyFailureMessage maps an EnsureRunning error to a user-facing
@@ -91,6 +95,7 @@ type Service struct {
 	previewBaseURL string
 	sbStatus       *sandboxstatus.Tracker // nil → no async tracking; login stays sync
 	signupLimit    *ratelimit.Limiter     // nil → no rate-limit (legacy / tests)
+	forgotLimit    *ratelimit.Limiter     // nil → no rate-limit
 	log            *slog.Logger
 }
 
@@ -120,6 +125,14 @@ func (s *Service) WithSignupRateLimit(l *ratelimit.Limiter) *Service {
 	return s
 }
 
+// WithForgotRateLimit attaches a per-IP token bucket to the Forgot
+// handler. Separate from signup so the two endpoints have independent
+// budgets per IP.
+func (s *Service) WithForgotRateLimit(l *ratelimit.Limiter) *Service {
+	s.forgotLimit = l
+	return s
+}
+
 // CORSWrapper is the optional middleware Register wraps GET /me with.
 // Matches the shape of cors.Policy.Middleware so the auth package
 // doesn't have to import internal/cors (which would invert the
@@ -137,6 +150,7 @@ func (s *Service) Register(mux *http.ServeMux, corsWrap CORSWrapper) {
 	mux.HandleFunc("POST /signup", s.Signup)
 	mux.HandleFunc("POST /login", s.Login)
 	mux.HandleFunc("POST /logout", s.Logout)
+	mux.HandleFunc("POST /forgot", s.Forgot)
 
 	meHandler := s.RequireAuth(http.HandlerFunc(s.Me))
 	// /me/sandbox returns the current bring-up status of the caller's
@@ -186,6 +200,21 @@ type userIDResp struct {
 type signupResp struct {
 	UserID  string `json:"user_id"`
 	Pending bool   `json:"pending"`
+}
+
+// forgotReq is what the public /forgot endpoint accepts. Email is
+// validated; Note is bounded; Website is the honeypot.
+type forgotReq struct {
+	Email   string `json:"email"`
+	Note    string `json:"note"`
+	Website string `json:"website"` // honeypot — humans send "", bots send arbitrary
+}
+
+// forgotResp is success-ish for any path the public sees. The OK
+// flag is always true — the editor doesn't need to distinguish
+// "real" success from "honeypot" or "no matching email".
+type forgotResp struct {
+	OK bool `json:"ok"`
 }
 
 type meResp struct {
@@ -453,6 +482,71 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, userIDResp{UserID: u.ID})
+}
+
+// Forgot accepts a password-reset request. Public endpoint — no auth.
+// Always returns 200 (regardless of whether the email matches a real
+// user) to avoid email enumeration. The admin sees the row in /admin
+// and decides whether to act.
+//
+// Defenses:
+//   - Honeypot field ("website"). Bots fill it; success-ish response,
+//     no DB row.
+//   - Per-IP rate limit (separate budget from signup). 429 on exhaustion.
+//   - Note field bounded to forgotNoteMaxChars to keep rows compact.
+func (s *Service) Forgot(w http.ResponseWriter, r *http.Request) {
+	var req forgotReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.Website) != "" {
+		s.log.Warn("forgot: honeypot tripped — silently dropping",
+			"client_ip", ratelimit.ClientIP(r))
+		writeJSON(w, http.StatusOK, forgotResp{OK: true})
+		return
+	}
+	ip := ratelimit.ClientIP(r)
+	if s.forgotLimit != nil && !s.forgotLimit.Allow(ip) {
+		s.log.Warn("forgot: rate-limited", "client_ip", ip)
+		w.Header().Set("Retry-After", "600")
+		writeError(w, http.StatusTooManyRequests,
+			"too many requests — please try again later")
+		return
+	}
+	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	if _, err := mail.ParseAddress(req.Email); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid email")
+		return
+	}
+	req.Note = strings.TrimSpace(req.Note)
+	if len(req.Note) > forgotNoteMaxChars {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("note must be at most %d characters", forgotNoteMaxChars))
+		return
+	}
+
+	// Best-effort user lookup. Empty UserID is fine — admin sees the
+	// row + can dismiss.
+	var userID string
+	if u, err := s.store.GetUserByEmail(r.Context(), req.Email); err == nil {
+		userID = u.ID
+	}
+
+	if _, err := s.store.CreatePasswordResetRequest(r.Context(), store.PasswordResetRequest{
+		Email:     req.Email,
+		UserID:    userID,
+		Note:      req.Note,
+		ClientIP:  ip,
+		CreatedAt: time.Now().UTC().Unix(),
+	}); err != nil {
+		s.log.Error("forgot: failed to create request", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	s.log.Info("forgot: request recorded",
+		"email", req.Email, "matched_user_id", userID, "client_ip", ip)
+	writeJSON(w, http.StatusOK, forgotResp{OK: true})
 }
 
 // Logout deletes the session row referenced by the cookie and clears the

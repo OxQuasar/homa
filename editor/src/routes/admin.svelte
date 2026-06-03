@@ -10,7 +10,11 @@
     adminListUsers,
     adminApprove,
     adminReject,
+    adminListPasswordResets,
+    adminResetPassword,
+    adminDismissPasswordReset,
     type AdminUserRow,
+    type AdminPasswordResetRow,
   } from '../lib/api';
 
   let users = $state<AdminUserRow[]>([]);
@@ -39,14 +43,69 @@
     rejected: users.filter((u) => u.status === 'rejected').length,
   });
 
+  // --- password reset requests ---------------------------------------
+  let resets = $state<AdminPasswordResetRow[]>([]);
+  let resetActing = $state<Record<number, boolean>>({});
+  // After a successful reset, hold the cleartext password so the admin
+  // can copy it. Keyed by request id. Auto-clears when the admin clicks
+  // "I copied it" or refreshes.
+  let revealedPassword = $state<Record<number, string>>({});
+
+  const pendingResets = $derived(resets.filter((r) => r.status === 'pending'));
+
   async function load() {
     try {
-      users = await adminListUsers();
+      const [u, p] = await Promise.all([
+        adminListUsers(),
+        adminListPasswordResets(),
+      ]);
+      users = u;
+      resets = p;
     } catch (e) {
       error = (e as Error).message;
     } finally {
       loaded = true;
     }
+  }
+
+  async function resetPw(id: number) {
+    if (!confirm('Issue a new password for this account? The existing password will be invalidated and all active sessions revoked.')) {
+      return;
+    }
+    resetActing = { ...resetActing, [id]: true };
+    try {
+      const result = await adminResetPassword(id);
+      resets = resets.map((r) => (r.id === id ? result.request : r));
+      revealedPassword = { ...revealedPassword, [id]: result.new_password };
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      resetActing = { ...resetActing, [id]: false };
+    }
+  }
+
+  async function dismissPw(id: number) {
+    resetActing = { ...resetActing, [id]: true };
+    try {
+      const updated = await adminDismissPasswordReset(id);
+      resets = resets.map((r) => (r.id === id ? updated : r));
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      resetActing = { ...resetActing, [id]: false };
+    }
+  }
+
+  function clearRevealed(id: number) {
+    const next = { ...revealedPassword };
+    delete next[id];
+    revealedPassword = next;
+  }
+
+  async function copyPassword(id: number) {
+    const pw = revealedPassword[id];
+    if (!pw) return;
+    try { await navigator.clipboard.writeText(pw); } catch {}
   }
 
   async function approve(userId: string) {
@@ -199,6 +258,72 @@
           {/each}
         </ul>
       {/if}
+
+      <!-- Password reset requests. Section is always rendered, but the
+           list only shows when there are rows. Pending first, then
+           recent resolved. -->
+      <h2 class="section-h2">
+        Password reset requests
+        {#if pendingResets.length > 0}<span class="badge urgent">{pendingResets.length} pending</span>{/if}
+      </h2>
+      {#if resets.length === 0}
+        <p class="status">No requests.</p>
+      {:else}
+        <ul class="resets">
+          {#each resets as r (r.id)}
+            <li class="reset reset-{r.status}">
+              <div class="row">
+                <div class="who">
+                  <div class="primary">
+                    <span class="email">{r.email}</span>
+                    <span class="badge status-{r.status}">{r.status}</span>
+                  </div>
+                  <div class="secondary">
+                    {#if r.user_id}
+                      matched user_id <code>{r.user_id}</code>
+                    {:else}
+                      <em>no matching account</em>
+                    {/if}
+                    <span class="meta">· {fmtDate(r.created_at)}</span>
+                  </div>
+                  {#if r.note}
+                    <div class="note">{r.note}</div>
+                  {/if}
+                </div>
+                <div class="actions">
+                  {#if r.status === 'pending'}
+                    {#if r.user_id}
+                      <button
+                        class="approve"
+                        disabled={resetActing[r.id]}
+                        onclick={() => resetPw(r.id)}
+                      >Reset password</button>
+                    {/if}
+                    <button
+                      class="reject"
+                      disabled={resetActing[r.id]}
+                      onclick={() => dismissPw(r.id)}
+                    >Dismiss</button>
+                  {/if}
+                </div>
+              </div>
+              {#if revealedPassword[r.id]}
+                <!-- One-time reveal of the freshly generated password.
+                     Admin copies it, delivers out-of-band, then dismisses
+                     this card. The cleartext is not persisted anywhere. -->
+                <div class="reveal">
+                  <div class="reveal-label">New password (shown once — copy now):</div>
+                  <div class="reveal-row">
+                    <code class="reveal-pw">{revealedPassword[r.id]}</code>
+                    <button class="copy" onclick={() => copyPassword(r.id)}>Copy</button>
+                    <button class="ack" onclick={() => clearRevealed(r.id)}>I copied it</button>
+                  </div>
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </div>
 {/if}
@@ -303,4 +428,71 @@
     margin: 0 0 0.25rem;
   }
   .essays p { margin: 0; line-height: 1.5; color: #333; white-space: pre-wrap; }
+
+  /* Password reset requests section --------------------------------- */
+  .section-h2 {
+    font-size: 1.15rem; font-weight: 600;
+    margin: 2.5rem 0 1rem;
+    color: #222;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .badge.urgent {
+    background: #fef3d4; color: #88660b;
+    font-size: 0.7rem; padding: 0.15rem 0.5rem;
+    border-radius: 9px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  ul.resets { list-style: none; padding: 0; margin: 0; }
+  .reset {
+    border: 1px solid #e6e6e6;
+    border-radius: 6px;
+    margin-bottom: 0.6rem;
+    background: #fff;
+  }
+  .reset-pending  { border-left: 3px solid #d4a017; }
+  .reset-resolved { border-left: 3px solid #2c7c41; background: #fcfcfc; }
+  .reset .email { font-weight: 600; }
+  .reset code {
+    font-size: 0.78rem; background: #f4f4f4;
+    padding: 0.05rem 0.35rem; border-radius: 3px;
+  }
+  .reset .note {
+    margin-top: 0.4rem;
+    padding: 0.5rem 0.7rem;
+    background: #fafafa;
+    border-left: 2px solid #ddd;
+    border-radius: 3px;
+    color: #444; font-size: 0.85rem;
+    white-space: pre-wrap;
+  }
+
+  /* Reveal panel — one-time display of the freshly minted password. */
+  .reveal {
+    padding: 0.85rem 1rem 1rem;
+    border-top: 1px solid #f0f0f0;
+    background: #f7fbf7;
+  }
+  .reveal-label {
+    font-size: 0.75rem; color: #2c7c41; font-weight: 500;
+    margin-bottom: 0.5rem;
+  }
+  .reveal-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .reveal-pw {
+    flex: 1; min-width: 200px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 1rem; padding: 0.4rem 0.6rem;
+    background: #fff; border: 1px solid #ccc; border-radius: 4px;
+    user-select: all;
+  }
+  .reveal .copy {
+    padding: 0.4rem 0.8rem;
+    border: 1px solid #2c7c41; background: #2c7c41; color: #fff;
+    border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+  }
+  .reveal .ack {
+    padding: 0.4rem 0.8rem;
+    border: 1px solid #ccc; background: #fff; color: #666;
+    border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+  }
 </style>

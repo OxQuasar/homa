@@ -77,3 +77,23 @@ CREATE INDEX IF NOT EXISTS idx_pm_sent
   ON private_messages(sender_id, recipient_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_pm_received
   ON private_messages(recipient_id, sender_id, created_at);
+
+-- Password reset requests — created via POST /forgot, resolved by an
+-- admin via the /admin UI (homa reset-password CLI is a separate path
+-- without going through this table). user_id is nullable: when the
+-- email doesn't match any account we still record the row so the
+-- admin sees the attempt (and we never leak account existence via
+-- the public response).
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  email        TEXT NOT NULL,                -- as typed by the user
+  user_id      TEXT,                          -- nullable; resolved at insertion
+  note         TEXT,                          -- optional free-form context
+  client_ip    TEXT,                          -- best-effort, for admin context
+  created_at   INTEGER NOT NULL,              -- unix seconds UTC
+  resolved_at  INTEGER,                       -- null = pending
+  resolved_by  TEXT                           -- admin user_id who handled
+);
+-- Pending-list query: WHERE resolved_at IS NULL ORDER BY created_at.
+CREATE INDEX IF NOT EXISTS idx_prr_pending
+  ON password_reset_requests(resolved_at, created_at);

@@ -241,8 +241,12 @@ func run(configPath string, log *slog.Logger) error {
 	// Signup rate-limit: 5 attempts per IP per hour (refill once every
 	// 12min). Honeypot field + this limit defeat scripted form spam.
 	signupLimit := ratelimit.New(5, 12*time.Minute)
+	// Forgot-password: same cadence. Separate budget per IP so the two
+	// endpoints don't share their burst.
+	forgotLimit := ratelimit.New(5, 12*time.Minute)
 	authSvc := auth.New(st, prov, cfg.SecureCookies(), cfg.PreviewBaseURL, sbStatus, log).
-		WithSignupRateLimit(signupLimit)
+		WithSignupRateLimit(signupLimit).
+		WithForgotRateLimit(forgotLimit)
 
 	mux := http.NewServeMux()
 	// Order: auth (POST endpoints + GET /me) → ws proxy (GET /ws) → static
