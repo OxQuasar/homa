@@ -61,10 +61,11 @@ const (
 // Proxy authenticates Anthropic API calls on behalf of nous instances
 // running inside user containers.
 type Proxy struct {
-	credsPath string
-	upstream  *url.URL
-	client    *http.Client // dedicated to upstream calls
-	log       *slog.Logger
+	credsPath     string
+	upstream      *url.URL
+	oauthTokenURL string // overrideable for tests; defaults to claude.ai
+	client        *http.Client // dedicated to upstream calls
+	log           *slog.Logger
 
 	// Single-flight refresh: serialize the OAuth dance so concurrent
 	// 401s on the same token boundary collapse to one refresh.
@@ -81,16 +82,24 @@ func New(credsPath string, log *slog.Logger) *Proxy {
 	}
 	u, _ := url.Parse(upstreamBase)
 	return &Proxy{
-		credsPath: credsPath,
-		upstream:  u,
-		client:    &http.Client{Timeout: 5 * time.Minute},
-		log:       log,
+		credsPath:     credsPath,
+		upstream:      u,
+		oauthTokenURL: oauthTokenURL,
+		client:        &http.Client{Timeout: 5 * time.Minute},
+		log:           log,
 	}
 }
 
 // ServeHTTP implements the proxy. Reads the operator's creds, adds
 // auth headers, forwards to api.anthropic.com. On 401 → refresh once
 // → retry once. All other status codes pass through verbatim.
+//
+// Streaming responses (e.g. SSE chat completions) are piped straight
+// through — we don't buffer the response body. The 401-retry path
+// only needs to inspect the status code, which is available before
+// any body bytes flow. So:
+//   200/streaming: io.Copy upstream→client, no buffering
+//   401 once     : drain + close, refresh, retry once, then pipe
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		p.healthz(w)
@@ -104,7 +113,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the request body once so we can replay on retry.
+	// Read the request body once so we can replay on retry. Bounded
+	// by Anthropic's request-size limit (a few MB) — acceptable to
+	// buffer.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
@@ -112,39 +123,54 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	resp, respBody := p.forward(r, body, creds.ClaudeAiOauth.AccessToken)
-	if resp == nil {
+	resp, err := p.do(r.Context(), r, body, creds.ClaudeAiOauth.AccessToken)
+	if err != nil {
+		p.log.Error("llmproxy: upstream call failed", "err", err)
 		http.Error(w, "upstream unreachable", http.StatusBadGateway)
 		return
 	}
 
-	// Refresh + retry on 401. Refresh is single-flight + cooldown-gated.
+	// Refresh + retry on 401 — happens BEFORE any body is read, so
+	// we don't buffer the streaming response of a successful retry.
 	if resp.StatusCode == http.StatusUnauthorized {
+		// Drain + close the 401 body before reusing the connection's
+		// resources. Body is small (error JSON), cheap to discard.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
 		p.log.Info("llmproxy: 401 from upstream — refreshing")
 		if err := p.refresh(); err != nil {
 			p.log.Warn("llmproxy: refresh failed", "err", err)
-			// Fall through with the 401 — client sees the error.
-		} else if newCreds, err := p.loadCreds(); err == nil {
-			resp, respBody = p.forward(r, body, newCreds.ClaudeAiOauth.AccessToken)
-			if resp == nil {
-				http.Error(w, "upstream unreachable after refresh", http.StatusBadGateway)
-				return
-			}
+			// Fall through to writing the 401 — but we already drained.
+			// Build a synthetic 401 response so the client sees something.
+			http.Error(w, "authentication failed and refresh unsuccessful",
+				http.StatusUnauthorized)
+			return
+		}
+		newCreds, err := p.loadCreds()
+		if err != nil {
+			http.Error(w, "post-refresh creds load failed", http.StatusInternalServerError)
+			return
+		}
+		resp, err = p.do(r.Context(), r, body, newCreds.ClaudeAiOauth.AccessToken)
+		if err != nil {
+			p.log.Error("llmproxy: upstream call failed after refresh", "err", err)
+			http.Error(w, "upstream unreachable after refresh", http.StatusBadGateway)
+			return
 		}
 	}
 
-	p.copyResponse(w, resp, respBody)
+	p.streamResponse(w, resp)
 }
 
-// forward issues a single upstream request with the given access
-// token. Body is replayable so 401-retry can reuse it. Returns
-// (nil, nil) when the dial fails entirely.
-func (p *Proxy) forward(orig *http.Request, body []byte, accessToken string) (*http.Response, []byte) {
-	upstream, err := http.NewRequestWithContext(orig.Context(), orig.Method,
+// do issues a single upstream request and returns the response WITH
+// the body still open. Caller is responsible for closing resp.Body.
+// Returns (nil, err) when the dial fails entirely.
+func (p *Proxy) do(ctx context.Context, orig *http.Request, body []byte, accessToken string) (*http.Response, error) {
+	upstream, err := http.NewRequestWithContext(ctx, orig.Method,
 		p.upstream.String()+orig.URL.RequestURI(), bytes.NewReader(body))
 	if err != nil {
-		p.log.Error("llmproxy: build upstream req", "err", err)
-		return nil, nil
+		return nil, fmt.Errorf("build upstream req: %w", err)
 	}
 	// Copy headers (except hop-by-hop), then override auth + OAuth-required.
 	copyHeaders(upstream.Header, orig.Header)
@@ -159,23 +185,16 @@ func (p *Proxy) forward(orig *http.Request, body []byte, accessToken string) (*h
 	// some endpoints on this signal.
 	upstream.Header.Set("user-agent", "claude-cli/2.1.0 (external, cli)")
 
-	resp, err := p.client.Do(upstream)
-	if err != nil {
-		p.log.Error("llmproxy: upstream call failed", "err", err)
-		return nil, nil
-	}
-	respBody, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		p.log.Error("llmproxy: read upstream body", "err", err)
-		return nil, nil
-	}
-	return resp, respBody
+	return p.client.Do(upstream)
 }
 
-func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response, body []byte) {
+// streamResponse pipes upstream → client without buffering. Headers
+// + status flush before body bytes flow, so streaming chunks arrive
+// at the client incrementally — critical for SSE chat-completion
+// responses (the editor's "watch the LLM type" experience).
+func (p *Proxy) streamResponse(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
 	for k, vs := range resp.Header {
-		// Drop hop-by-hop headers; safer for the proxy boundary.
 		if isHopByHop(k) {
 			continue
 		}
@@ -184,7 +203,29 @@ func (p *Proxy) copyResponse(w http.ResponseWriter, resp *http.Response, body []
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(body)
+	// Flush after each chunk so streaming bytes hit the wire promptly.
+	// Without this, the standard library's buffered ResponseWriter
+	// may collect chunks before emitting them.
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 8*1024)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return // client disconnected; stop reading upstream
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			p.log.Debug("llmproxy: upstream read", "err", err)
+			return
+		}
+	}
 }
 
 // healthz returns a tiny status JSON. Operator can curl this to
@@ -305,7 +346,7 @@ func (p *Proxy) refresh() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, oauthTokenURL,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.oauthTokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("build refresh req: %w", err)

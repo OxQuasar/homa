@@ -1,6 +1,7 @@
 package llmproxy
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // writeCreds creates a credentials file at path with the given access
@@ -216,5 +218,126 @@ func TestProxy_InjectsRequiredHeaders(t *testing.T) {
 	}
 	if got.Header.Get("user-agent") == "" {
 		t.Error("missing user-agent")
+	}
+}
+
+// TestProxy_StreamingResponse — SSE-style chunked response is piped
+// through to the client incrementally, not buffered. We control the
+// fake upstream to write a chunk, sleep, write another. The client
+// reads each chunk as it arrives.
+//
+// This is the regression test for B1: the original implementation
+// called io.ReadAll on the upstream body before returning, breaking
+// streaming responses (which Anthropic uses for chat completions).
+func TestProxy_StreamingResponse(t *testing.T) {
+	creds := writeTestCreds(t, t.TempDir(), "tok", "rt")
+
+	// Upstream that writes 3 chunks with a small gap between each.
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		flusher := w.(http.Flusher)
+		for i, chunk := range []string{"data: a\n\n", "data: b\n\n", "data: c\n\n"} {
+			_, _ = w.Write([]byte(chunk))
+			flusher.Flush()
+			if i < 2 {
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+	}))
+	t.Cleanup(upstreamSrv.Close)
+
+	p := proxyWithUpstream(t, creds, upstreamSrv.URL)
+	srv := httptest.NewServer(p)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Track when each `data:` line arrives. If the proxy buffers, all
+	// arrive together near t=40ms; if it streams, they arrive at
+	// roughly t=0, t=20, t=40.
+	type arrival struct {
+		line string
+		at   time.Duration
+	}
+	var arrivals []arrival
+	start := time.Now()
+	br := bufio.NewReader(resp.Body)
+	for {
+		line, err := br.ReadString('\n')
+		if strings.HasPrefix(line, "data:") {
+			arrivals = append(arrivals, arrival{line: line, at: time.Since(start)})
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	if len(arrivals) != 3 {
+		t.Fatalf("got %d data lines; want 3", len(arrivals))
+	}
+	// First data line should arrive promptly — proxy not buffering.
+	if arrivals[0].at > 15*time.Millisecond {
+		t.Errorf("first data line at %v; proxy may be buffering", arrivals[0].at)
+	}
+	// Last data line at ~40ms means we observed the gap, not bunched.
+	if arrivals[2].at < 30*time.Millisecond {
+		t.Errorf("last data line at %v; chunks bunched (proxy buffering?)",
+			arrivals[2].at)
+	}
+}
+
+// TestProxy_RefreshOn401 — proxy detects upstream 401, calls the
+// refresh endpoint (mocked), retries with new token. Verifies the
+// retry succeeds with the refreshed token.
+func TestProxy_RefreshOn401(t *testing.T) {
+	credsPath := writeTestCreds(t, t.TempDir(), "old-token", "rt-old")
+
+	// Mock OAuth refresh server.
+	oauthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"access_token": "new-token-fresh",
+			"refresh_token": "rt-new",
+			"expires_in": 28800
+		}`))
+	}))
+	t.Cleanup(oauthSrv.Close)
+
+	// Upstream that 401s with old-token, 200s with new-token.
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "Bearer new-token-fresh" {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"expired"}`))
+	}))
+	t.Cleanup(upstreamSrv.Close)
+
+	p := proxyWithUpstream(t, credsPath, upstreamSrv.URL)
+	p.oauthTokenURL = oauthSrv.URL // override for test
+	srv := httptest.NewServer(p)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("status: %d, body: %s", resp.StatusCode, body)
+	}
+	// Creds file rewritten with new token.
+	data, _ := os.ReadFile(credsPath)
+	if !strings.Contains(string(data), "new-token-fresh") {
+		t.Errorf("creds file not updated: %s", data)
 	}
 }
