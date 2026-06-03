@@ -92,32 +92,33 @@
 
       <section class="m-body">
         <p class="lede">
-          [ TODO: opening line — set the spirit of the place. ]
+          Do you feel the world is hardly what it seems? 
+          That lost ancient knowledge goes far deeper than what is told? 
+          Do you feel the world is disintegrating? 
+          That the leaders are corrupt and unfeeling? 
+          That work is divorced from meaning
+          And action from heart from mind? 
+          
+          Do you feel we are on the cusp of great change, 
+          The turning of an era, 
+          That champions are needed, 
+          To unite our actions,
+          unite our minds, 
+          unite our hearts? 
         </p>
 
         <p>
-          [ TODO: paragraph 1 — what the White Tower is. ]
-        </p>
-
-        <p>
-          [ TODO: paragraph 2 — what members do here. What's encouraged,
-          what's discouraged. ]
-        </p>
-
-        <p>
-          [ TODO: paragraph 3 — the relationship between sandbox-driven AI
-          collaboration and the research corpus. What contribution looks
-          like. ]
-        </p>
-
-        <p>
-          [ TODO: paragraph 4 — etiquette, scope, who this is for, who
-          it isn't for. ]
+          We prepare to surf the brewing chaos. We use the latest
+          technologies to self-direct our research. We research the past —
+          learnings and wisdom from the great lost civilizations. We
+          research the present — the structure of the financial markets
+          and the modern system. We fund ourselves and direct ourselves.
+          And we direct the future.
         </p>
 
         <p class="m-close">
-          [ TODO: closing line. The point past which the reader is ready
-          to commit to participation. ]
+          Are you one of the worthy? Will you give yourself to serve the
+          greatest of causes? Will you join us?
         </p>
       </section>
 
@@ -263,17 +264,28 @@
     letter-spacing: 0.01em;
   }
   .m-body { color: #333; font-size: 1.05rem; }
-  .m-body p { margin: 0 0 1rem; }
+  .m-body p { margin: 0 0 1.25rem; }
+  /* Lede: the hand-broken lines are intentional (read as
+     incantation). pre-line preserves newlines while still collapsing
+     runs of spaces; italic + center keeps the poetic frame. Blank
+     lines in the source render as visual breath between strophes. */
   .m-body .lede {
     font-size: 1.15rem;
     color: #222;
     font-style: italic;
-    margin-bottom: 1.5rem;
+    text-align: center;
+    white-space: pre-line;
+    margin-bottom: 2rem;
   }
+  /* Closing question. Bolder + slightly larger so it lands. The CTA
+     button visually answers it. */
   .m-body .m-close {
-    margin-top: 1.5rem;
-    color: #444;
+    margin-top: 1.75rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #eee;
+    color: #222;
     font-weight: 500;
+    font-size: 1.1rem;
   }
   .m-cta {
     display: flex;
