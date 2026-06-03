@@ -117,8 +117,8 @@
         </p>
 
         <p class="m-close">
-          Are you one of the worthy? Will you give yourself to serve the
-          greatest of causes? Will you join us?
+          Are you one of the worthy? Will you give yourself to serve a
+          great cause? Will you join us?
         </p>
       </section>
 

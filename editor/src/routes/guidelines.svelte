@@ -18,75 +18,66 @@
   </header>
 
   <nav class="toc" aria-label="table of contents">
-    <a href="#welcome">Welcome</a>
-    <a href="#the-tower">The White Tower</a>
     <a href="#editor">Using the editor</a>
     <a href="#sandbox">Your AI sandbox</a>
-    <a href="#pr">Pull requests &amp; merging</a>
-    <a href="#forum">Forum &amp; messages</a>
-    <a href="#library">The library</a>
-    <a href="#etiquette">Etiquette</a>
+    <a href="#projects">Projects</a>
   </nav>
-
-  <section id="welcome" class="g-section">
-    <h2>Welcome</h2>
-    <p>[ TODO: write the welcome — 1–2 short paragraphs.  Who is this for, what they're stepping into, the spirit of the place. ]</p>
-  </section>
-
-  <section id="the-tower" class="g-section">
-    <h2>What is the White Tower?</h2>
-    <p>[ TODO: the high-level frame. What the project is. What members do. What success looks like. ]</p>
-  </section>
 
   <section id="editor" class="g-section">
     <h2>Using the editor</h2>
+
+    <p>
+      This is a living website that you change and build as projects continue.
+      Ask the AI to make changes and build the website. You may also use the
+      VS Code tab in the editor to directly change the source code.
+    </p>
+
     <h3>The chat panel</h3>
-    <p>[ TODO: what the AI tab is, how to message it, what conversations to expect. ]</p>
+    <p>
+      The Admin funds the tokens in the AI chat. Use it only for White Tower
+      purposes. It can be used to modify and build the website. When finished
+      with a change ask the AI to commit and make a PR for merge.
+    </p>
+
     <h3>The DM tabs</h3>
-    <p>[ TODO: clicking + opens a DM picker; tabs persist across reload; etc. ]</p>
-    <h3>The preview / iframe</h3>
-    <p>[ TODO: what the right pane shows, that it's your live site, navigation works. ]</p>
+    <p>Send DMs to other White Tower members.</p>
+
     <h3>Opening VS Code</h3>
-    <p>[ TODO: the Open VS Code button, what they can do there. ]</p>
+    <p>You may view and directly change the source code of the site in VS Code mode.</p>
   </section>
 
   <section id="sandbox" class="g-section">
     <h2>Your AI sandbox</h2>
-    <p>[ TODO: explain that the LLM has access to your worktree, can read/write files, can run shell commands. What kinds of tasks to give it. ]</p>
-    <h3>What to ask for</h3>
+    <p>
+      Your session runs in a sandbox which is a branch of the main site.
+      The LLM has access to your worktree, can read and write research files,
+      and can run shell commands. Use it to build and change the website and
+      to carry out project research.
+    </p>
+  </section>
+
+  <section id="projects" class="g-section">
+    <h2>Projects</h2>
+    <p>Our open projects:</p>
     <ul>
-      <li>[ example task 1 ]</li>
-      <li>[ example task 2 ]</li>
-      <li>[ example task 3 ]</li>
+      <li>
+        <strong>Financial Markets Research.</strong> We've done extensive
+        research on crypto markets trading and macro strategies and have a
+        trading platform coded up. Contact the admin (0xquasar) if interested
+        in joining.
+      </li>
+      <li>
+        <strong>Ancient Philosophy Research.</strong> Quite a bit has been
+        lost in translation over 2000+ years. We are using AI to directly
+        translate Ancient Greek and Classical Chinese texts. In particular,
+        mathematical characterization is ongoing on the I Ching.
+      </li>
     </ul>
-    <h3>What it can read</h3>
-    <p>[ TODO: <code>/library/</code> reference content, your worktree, project context (CLAUDE.md). ]</p>
-  </section>
-
-  <section id="pr" class="g-section">
-    <h2>Pull requests &amp; merging</h2>
-    <p>[ TODO: PR branches naming, how to ask the AI to create one, how an operator reviews + merges. ]</p>
-    <pre class="code">git checkout -b pr/&lt;userid&gt;/&lt;topic&gt;
-# commit work...
-</pre>
-  </section>
-
-  <section id="forum" class="g-section">
-    <h2>Forum &amp; messages</h2>
-    <h3>Forum threads</h3>
-    <p>[ TODO: how to post, what topics are encouraged, link to /forum. ]</p>
-    <h3>Direct messages</h3>
-    <p>[ TODO: where DMs live (chat panel tabs), how to reach another user. ]</p>
-  </section>
-
-  <section id="library" class="g-section">
-    <h2>The library</h2>
-    <p>[ TODO: <code>/library</code> on the public site, <code>/library</code> inside the sandbox for the AI. Pointers to subject collections (e.g. i-ching). ]</p>
-  </section>
-
-  <section id="etiquette" class="g-section">
-    <h2>Etiquette</h2>
-    <p>[ TODO: tone, respect, no harassment, scope of acceptable use, what gets accounts rejected. ]</p>
+    <p>
+      Want to join an active project? Want to start up a new one? Discuss
+      a plan with the admin (0xquasar). Let's use AI to push the boundaries
+      of what was possible.
+    </p>
   </section>
 
   <footer class="g-foot">
