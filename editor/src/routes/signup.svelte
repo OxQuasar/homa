@@ -270,12 +270,15 @@
      runs of spaces; italic + center keeps the poetic frame. Blank
      lines in the source render as visual breath between strophes. */
   .m-body .lede {
-    font-size: 1.15rem;
+    /* Lede is the heart of the manifesto — bumped up so it carries
+       the page. Hierarchy: title (2.3) > lede (1.4) > body/close (1.05). */
+    font-size: 1.4rem;
+    line-height: 1.45;
     color: #222;
     font-style: italic;
     text-align: center;
     white-space: pre-line;
-    margin-bottom: 2rem;
+    margin-bottom: 2.25rem;
   }
   /* Closing question — the moment the reader decides. GFS Didot
      (Greek Font Society's classical-revival Didot, the typeface of
