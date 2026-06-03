@@ -264,7 +264,14 @@
     letter-spacing: 0.01em;
   }
   .m-body { color: #333; font-size: 1.05rem; }
-  .m-body p { margin: 0 0 1.25rem; }
+  /* Body paragraph (sits between lede + close). Bumped up for reading
+     presence; class-scoped selectors for .lede and .m-close win over
+     this rule, so they keep their own sizes. */
+  .m-body p {
+    font-size: 1.2rem;
+    line-height: 1.55;
+    margin: 0 0 1.25rem;
+  }
   /* Lede: the hand-broken lines are intentional (read as
      incantation). pre-line preserves newlines while still collapsing
      runs of spaces; italic + center keeps the poetic frame. Blank
