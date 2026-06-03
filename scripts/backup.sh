@@ -5,16 +5,20 @@
 # Uses SQLite's online-backup API (sqlite3 .backup) which is SAFE on a
 # live database — no risk of partial-write corruption, unlike a raw cp.
 #
-# Output: ~/homa/backups/homa-YYYYMMDD-HHMMSS.db.gz
-# Retention: keeps the most recent BACKUP_KEEP files, prunes the rest.
+# Output:    ~/homa/backups/homa-YYYYMMDD-HHMMSS.db.gz (primary on /sdb)
+# Retention: BACKUP_KEEP most recent (default 14)
+# Mirror:    if BACKUP_MIRROR_DIR is set, the primary dir is rsync'd
+#            (with --delete) to that path on each run. Use this for
+#            on-host redundancy across physical disks. Mirror exactly
+#            tracks the primary, including prunes.
 #
 # Usage:
-#   ./scripts/backup.sh                # run once
-#   systemd timer wraps for daily cron (see scripts/homa-backup.{service,timer})
+#   ./scripts/backup.sh                          # primary only
+#   BACKUP_MIRROR_DIR=/sda/homa-backups ./scripts/backup.sh
+#   systemd timer wraps for daily cron — see scripts/homa-backup.{service,timer}
 #
-# Off-host backup: this script writes locally. If gandiva's disk dies,
-# the backups die with it. For real off-host safety, add a follow-up
-# step (rclone / rsync to remote, or push to a private git repo).
+# Off-host (different machine) backup: not built in. Add an rclone /
+# rsync-to-remote step here when there's a destination chosen.
 set -euo pipefail
 
 ROOT="${HOMA_ROOT:-$HOME/homa}"
@@ -45,3 +49,16 @@ for f in "${OLD[@]:-}"; do
 done
 
 echo "backup.sh: $FINAL ($(stat -c%s "$FINAL") bytes; ${#OLD[@]} pruned; $KEEP retained)"
+
+# On-host redundancy mirror. --delete keeps the mirror an exact copy
+# of the primary (pruned files vanish on the mirror too). Non-fatal:
+# if the mirror destination is unavailable, the primary backup still
+# succeeded.
+if [ -n "${BACKUP_MIRROR_DIR:-}" ]; then
+  if mkdir -p "$BACKUP_MIRROR_DIR" 2>/dev/null && \
+     rsync -a --delete "$DEST_DIR/" "$BACKUP_MIRROR_DIR/" 2>&1; then
+    echo "backup.sh: mirrored → $BACKUP_MIRROR_DIR"
+  else
+    echo "backup.sh: WARN: mirror to $BACKUP_MIRROR_DIR failed" >&2
+  fi
+fi

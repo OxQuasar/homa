@@ -5,6 +5,11 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=%h/homa/scripts/backup.sh
+# On-host redundancy: also mirror to /sda (the second physical disk).
+# If /sdb fails, backups survive on /sda; if /sda fails, primary on
+# /sdb is untouched. Mirror is rsync --delete so it tracks the primary
+# exactly (including retention pruning).
+Environment=BACKUP_MIRROR_DIR=/sda/homa-backups
 # Failures are notable but shouldn't tear down anything — backup is
 # best-effort. The timer will retry tomorrow.
 Nice=10
