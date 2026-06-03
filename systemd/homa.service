@@ -4,6 +4,13 @@ Documentation=https://github.com/OxQuasar/homa
 After=network-online.target
 Wants=network-online.target
 
+# Burst-limit knobs live in [Unit], NOT [Service] (systemd quirk).
+# Window of 300s with 15 restart attempts — generous enough that a
+# brief flap (e.g. network transient at boot, podman daemon hiccup)
+# doesn't cause systemd to give up and leave the daemon down.
+StartLimitIntervalSec=300
+StartLimitBurst=15
+
 [Service]
 # Foreground binary, no daemonization.
 Type=simple
@@ -13,9 +20,16 @@ ExecStart=%h/homa/homa -config config.json
 # %h expands to the user's home — keeps this unit file user-relocatable
 # (works for any user that has homa installed under ~/homa).
 
-# Restart only on unexpected exits. Graceful shutdowns (SIGTERM exit 0)
-# leave the service stopped until explicitly restarted.
-Restart=on-failure
+# Restart policy for the always-on orchestrator daemon.
+#
+#   Restart=always   auto-restart on any exit (crash, signal, even
+#                    unexpected exit 0). Operator `systemctl stop`
+#                    still bypasses — systemd treats explicit stops
+#                    differently from process death.
+#   RestartSec=5s    wait 5s between attempts (avoids tight loop
+#                    during e.g. config-load failures).
+#   StartLimit*      see [Unit] — burst budget for restart attempts.
+Restart=always
 RestartSec=5s
 
 # Bound the graceful-shutdown window. The orchestrator's shutdownGrace
