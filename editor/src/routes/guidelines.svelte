@@ -22,7 +22,7 @@
 
     <p>
       This is a living website that you change and build as projects continue.
-      Ask the AI to make changes and build the website. You may also use the
+      Use the AI to build the website and do research. You may also use the
       VS Code tab in the editor to directly change the source code.
     </p>
 
