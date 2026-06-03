@@ -277,20 +277,23 @@
     white-space: pre-line;
     margin-bottom: 2rem;
   }
-  /* Closing question — the moment the reader decides. Display serif
-     (Cinzel, Roman-inscription style), heavier weight, wider tracking,
-     centered. Visually weightier than the body so the eye stops here
-     and the 'I'm in' CTA below answers it. */
+  /* Closing question — the moment the reader decides. GFS Didot
+     (Greek Font Society's classical-revival Didot, the typeface of
+     modern Greek scholarship). Centered, with a thin top rule for a
+     quiet pause. Deliberately RESTRAINED — same size as body, normal
+     weight, subtle tracking — so it doesn't outshine the lede above.
+     The intensity comes from typeface character + visual breathing
+     room, not heft. */
   .m-body .m-close {
     margin-top: 2.25rem;
-    padding-top: 1.75rem;
-    border-top: 1px solid #ddd;
-    font-family: 'Cinzel', 'Cormorant Garamond', Georgia, serif;
-    font-weight: 500;
-    font-size: 1.15rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #e0e0e0;
+    font-family: 'GFS Didot', 'Cormorant Garamond', Georgia, serif;
+    font-weight: 400;
+    font-size: 1.05rem;
     line-height: 1.6;
-    letter-spacing: 0.04em;
-    color: #1a1a1a;
+    letter-spacing: 0.015em;
+    color: #333;
     text-align: center;
   }
   .m-cta {
