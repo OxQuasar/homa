@@ -475,11 +475,11 @@ After any nous source change, rebuild the sandbox image (which bundles the nous 
 
 ```
 ~/homa/data       → symlink → /sdb/homa/data    (mounted: 11TB ext4 on sdb1)
-~/homa/backups    /home/quasar/homa/backups     (still on / — small, low growth)
-~/homa/branches/  /home/quasar/homa/branches    (per-user site-template worktrees)
+~/homa/backups    → symlink → /sdb/homa/backups
+~/homa/branches/  /home/quasar/homa/branches    (per-user site-template worktrees — still on /)
 ```
 
-`data/` was moved to `/sdb` for storage headroom (library + library-branches dominate growth). The symlink keeps every path inside the codebase, container mounts, and git worktree refs valid — no config change needed.
+`data/` + `backups/` moved to `/sdb` for storage headroom (library + library-branches dominate data growth; backups are tiny but symmetric). The symlinks keep every path inside the codebase, container mounts, git worktree refs, and backup.sh valid — no config change needed.
 
 To move `data/` between disks safely:
 
