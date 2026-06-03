@@ -29,8 +29,12 @@
     <h3>The chat panel</h3>
     <p>
       The Admin funds the tokens in the AI chat. Use it only for White Tower
-      purposes. It can be used to modify and build the website. When finished
-      with a change ask the AI to commit and make a PR for merge.
+      purposes. It can be used to: 
+      - Modify and build the website. 
+      - Summarize and explain research files. 
+      - Do Research. 
+      - Be creative with it. 
+      When finished with a change ask the AI to commit and make a PR for merge.
     </p>
 
     <h3>The DM tabs</h3>
