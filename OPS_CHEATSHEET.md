@@ -470,3 +470,26 @@ journalctl --user -u homa -f          # if running under systemd-user
 ```
 
 After any nous source change, rebuild the sandbox image (which bundles the nous binary): `bash ~/homa/sandbox/build.sh`.
+
+## Where state lives (post-move)
+
+```
+~/homa/data       → symlink → /sdb/homa/data    (mounted: 11TB ext4 on sdb1)
+~/homa/backups    /home/quasar/homa/backups     (still on / — small, low growth)
+~/homa/branches/  /home/quasar/homa/branches    (per-user site-template worktrees)
+```
+
+`data/` was moved to `/sdb` for storage headroom (library + library-branches dominate growth). The symlink keeps every path inside the codebase, container mounts, and git worktree refs valid — no config change needed.
+
+To move `data/` between disks safely:
+
+```bash
+systemctl --user stop homa
+podman stop -t 5 homa-main $(podman ps -aq --filter name=homa-user-)
+rsync -aHX ~/homa/data/  /new/path/homa/data/   # verify with diff -rq before next step
+rm -rf ~/homa/data
+ln -s /new/path/homa/data ~/homa/data
+systemctl --user start homa
+```
+
+**Recovery if data/ is lost**: SQLite DB from `~/homa/backups/`, library from `git@github.com:OxQuasar/homa-library.git`. `library-branches/` and `configs/` are recreated lazily; `code_server_secret` regenerated on startup.
