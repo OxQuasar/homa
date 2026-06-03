@@ -17,6 +17,17 @@
   // `homa approve <userid>` before this user can log in.
   let submittedPending = $state(false);
 
+  // Two-step UX: applicant reads the manifesto first, clicks 'I'm in'
+  // to reach the form. State machine across all screens:
+  //
+  //   manifesto  →  form  →  submittedPending
+  //
+  // 'manifesto' is the default so a fresh /signup load lands on it
+  // every time (no localStorage persistence — operator wants every
+  // applicant to read it).
+  type Step = 'manifesto' | 'form';
+  let step = $state<Step>('manifesto');
+
   // Strict ASCII pattern mirroring orchestrator's usernamePattern. Browser
   // `pattern` attribute gives instant feedback before submit; server still
   // validates (canonical source of truth).
@@ -69,8 +80,59 @@
         approved. Until then, login will tell you the application is pending.
       </p>
     </div>
+  {:else if step === 'manifesto'}
+    <!--
+      Manifesto step — applicant lands here on /signup. Edit the body
+      directly: replace placeholder paragraphs with the actual White
+      Tower manifesto. Keep it readable; the "I'm in" button advances
+      to the form.
+    -->
+    <article class="card manifesto">
+      <h1>The White Tower</h1>
+
+      <section class="m-body">
+        <p class="lede">
+          [ TODO: opening line — set the spirit of the place. ]
+        </p>
+
+        <p>
+          [ TODO: paragraph 1 — what the White Tower is. ]
+        </p>
+
+        <p>
+          [ TODO: paragraph 2 — what members do here. What's encouraged,
+          what's discouraged. ]
+        </p>
+
+        <p>
+          [ TODO: paragraph 3 — the relationship between sandbox-driven AI
+          collaboration and the research corpus. What contribution looks
+          like. ]
+        </p>
+
+        <p>
+          [ TODO: paragraph 4 — etiquette, scope, who this is for, who
+          it isn't for. ]
+        </p>
+
+        <p class="m-close">
+          [ TODO: closing line. The point past which the reader is ready
+          to commit to participation. ]
+        </p>
+      </section>
+
+      <div class="m-cta">
+        <button class="primary" onclick={() => (step = 'form')}>I'm in — apply</button>
+        <a class="secondary" href="#/login">I already have an account</a>
+      </div>
+    </article>
   {:else}
   <form class="card" onsubmit={onSubmit}>
+    <button
+      type="button"
+      class="back-to-manifesto"
+      onclick={() => (step = 'manifesto')}
+    >← back to the manifesto</button>
     <h1>Apply to the White Tower</h1>
     <p class="intro">
       Your application will be reviewed before access is granted.
@@ -183,4 +245,75 @@
   .pending h1 { margin-bottom: 0.75rem; }
   .pending p { color: #444; line-height: 1.45; margin: 0.5rem 0; }
   .pending .muted { color: #777; font-size: 0.85rem; }
+
+  /* Manifesto step — reads like a short essay, not a form. Wider
+     comfortable measure than the form card; serif body for reading
+     ergonomics; the CTA hits hard at the bottom. */
+  .manifesto {
+    max-width: 640px;
+    padding: 2.5rem 2.75rem;
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    line-height: 1.65;
+  }
+  .manifesto h1 {
+    font-size: 2.3rem;
+    font-weight: 500;
+    text-align: center;
+    margin: 0 0 1.75rem;
+    letter-spacing: 0.01em;
+  }
+  .m-body { color: #333; font-size: 1.05rem; }
+  .m-body p { margin: 0 0 1rem; }
+  .m-body .lede {
+    font-size: 1.15rem;
+    color: #222;
+    font-style: italic;
+    margin-bottom: 1.5rem;
+  }
+  .m-body .m-close {
+    margin-top: 1.5rem;
+    color: #444;
+    font-weight: 500;
+  }
+  .m-cta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #eee;
+  }
+  .m-cta button.primary {
+    padding: 0.75rem 2rem;
+    border: none;
+    border-radius: 4px;
+    background: #222;
+    color: white;
+    cursor: pointer;
+    font: inherit;
+    font-size: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .m-cta button.primary:hover { background: #000; }
+  .m-cta .secondary {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: #888;
+  }
+
+  /* Back-to-manifesto link at the top of the form card. Sans-serif
+     so it doesn't blend with the form labels visually. */
+  .back-to-manifesto {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+  }
+  .back-to-manifesto:hover { color: #222; }
 </style>
