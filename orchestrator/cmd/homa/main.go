@@ -106,6 +106,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "usage":
+			if err := runUsage(os.Args[2:], log); err != nil {
+				log.Error("usage failed", "err", err)
+				os.Exit(1)
+			}
+			return
 		case "pr":
 			r, _, err := loadSiteRepo()
 			if err != nil {
@@ -146,6 +152,7 @@ const usageText = `usage:
   homa reload <userid>           stop user's container — next login respawns with current config
   homa approve <userid>          grant access to a pending application (after homa review reads their essays)
   homa promote <userid>          make user an admin (access /api/admin/* + the editor admin page)
+  homa usage                     snapshot per-user token usage (queries each running container's nous)
 
   homa pr list                   list all pr/<userid>/<topic> branches with stats vs main
   homa pr show [<branch>]        diff + commits for a PR branch (no arg = single open PR)
@@ -357,6 +364,26 @@ func run(configPath string, log *slog.Logger) error {
 		go func() {
 			if err := gc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Error("lifecycle gc exited", "err", err)
+			}
+		}()
+	}
+
+	// Per-user usage logger — observation-only, no enforcement. Operator
+	// greps journalctl to see who's heavy. Disabled when interval==0.
+	if cfg.UsePodman && cfg.UsageLogIntervalMinutes > 0 {
+		usageLog := lifecycle.NewUsageLogger(
+			sandbox.NewPodmanManager(cfg.PodmanBin, sandbox.ExecRunner{}),
+			st,
+			lifecycle.CompactClient{},
+			lifecycle.UsageLoggerConfig{
+				Interval: time.Duration(cfg.UsageLogIntervalMinutes) * time.Minute,
+				Timeout:  5 * time.Second,
+			},
+			log,
+		)
+		go func() {
+			if err := usageLog.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("usage logger exited", "err", err)
 			}
 		}()
 	}
@@ -733,6 +760,90 @@ func runPromote(args []string, log *slog.Logger) error {
 // tailscale-serve registration is the only gate); the editor's cookie
 // gate doesn't apply to them. So the operator can open them in a
 // browser tab and see the user's site + their VS Code workspace.
+// runUsage snapshots per-user token usage and prints a table. For
+// each running user's container, dials the nous WS, fetches one
+// session_state event, and tallies the input-side numbers (prompt,
+// cache_creation, cache_read). Total is the sum — useful as a single
+// number for "who's heaviest right now".
+//
+// This is the same data the periodic usage logger writes to
+// journalctl; the CLI is for on-demand operator inspection.
+func runUsage(args []string, log *slog.Logger) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: homa usage (takes no arguments)")
+	}
+	cfg, err := config.Load(defaultConfigPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+
+	sb := sandbox.NewPodmanManager(cfg.PodmanBin, sandbox.ExecRunner{})
+	cc := lifecycle.CompactClient{}
+	ctx := context.Background()
+	summaries, err := st.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("list users: %w", err)
+	}
+
+	type row struct {
+		username                                                       string
+		userID                                                         string
+		prompt, cacheCreation, cacheRead, total                        int64
+		err                                                            string
+	}
+	var rows []row
+	for _, s := range summaries {
+		full, err := st.GetUserByID(ctx, s.ID)
+		if err != nil {
+			continue
+		}
+		r := row{username: full.Username, userID: full.ID}
+		running, _ := sb.IsRunning(ctx, full.ContainerName)
+		if !running {
+			r.err = "stopped"
+			rows = append(rows, r)
+			continue
+		}
+		if full.NousPort == 0 || full.NousSessionID == "" {
+			r.err = "no nous yet"
+			rows = append(rows, r)
+			continue
+		}
+		snap, err := cc.Snapshot(ctx, full.NousPort, full.NousSessionID, full.WorktreePath, 5*time.Second)
+		if err != nil {
+			r.err = err.Error()
+			rows = append(rows, r)
+			continue
+		}
+		r.prompt = snap.PromptTokens
+		r.cacheCreation = snap.CacheCreationTokens
+		r.cacheRead = snap.CacheReadTokens
+		r.total = snap.PromptTokens + snap.CacheCreationTokens + snap.CacheReadTokens
+		rows = append(rows, r)
+	}
+	// Heaviest first; rows with errors sink to the bottom.
+	sort.Slice(rows, func(i, j int) bool {
+		if (rows[i].err == "") != (rows[j].err == "") {
+			return rows[i].err == ""
+		}
+		return rows[i].total > rows[j].total
+	})
+
+	fmt.Printf("%-16s  %-10s  %12s  %12s  %12s  %12s  %s\n",
+		"USERNAME", "USERID", "PROMPT", "CACHE_CREATE", "CACHE_READ", "TOTAL", "NOTE")
+	for _, r := range rows {
+		fmt.Printf("%-16s  %-10s  %12d  %12d  %12d  %12d  %s\n",
+			r.username, r.userID, r.prompt, r.cacheCreation, r.cacheRead, r.total, r.err)
+	}
+	_ = log
+	return nil
+}
+
 func runReview(args []string, log *slog.Logger) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: homa review <userid>")

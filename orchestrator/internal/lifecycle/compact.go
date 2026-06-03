@@ -49,6 +49,47 @@ var ErrBelowThreshold = errors.New("session below compaction threshold")
 // Returns 0 if the snap was never read.
 //
 // `minTokens <= 0` disables the gate (always compact).
+// Snapshot pulls a read-only session_state from nous — same dial +
+// hello pattern as Run, but stops after the first session_state frame
+// instead of issuing a full_compact. Used by the periodic usage
+// logger to observe per-user token counts without side effects.
+//
+// Returns the snapshot or any dial/handshake error.
+func (c CompactClient) Snapshot(ctx context.Context, nousPort int, sessionID, workDir string, timeout time.Duration) (Snapshot, error) {
+	url := fmt.Sprintf("ws://127.0.0.1:%d/", nousPort)
+	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
+	conn, _, err := websocket.Dial(dialCtx, url, nil)
+	dialCancel()
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("dial nous: %w", err)
+	}
+	conn.SetReadLimit(-1)
+	defer conn.Close(websocket.StatusNormalClosure, "snapshot done")
+
+	roundCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	hello, _ := json.Marshal(map[string]string{
+		"work_dir":   workDir,
+		"session_id": sessionID,
+	})
+	if err := conn.Write(roundCtx, websocket.MessageText, hello); err != nil {
+		return Snapshot{}, fmt.Errorf("write hello: %w", err)
+	}
+	stateEv, err := waitForEvent(roundCtx, conn, "session_state")
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("waiting for snapshot: %w", err)
+	}
+	if stateEv.SessionState == nil {
+		return Snapshot{}, nil // no usage to report
+	}
+	return Snapshot{
+		PromptTokens:        stateEv.SessionState.PromptTokens,
+		CacheCreationTokens: stateEv.SessionState.CacheCreationTokens,
+		CacheReadTokens:     stateEv.SessionState.CacheReadTokens,
+	}, nil
+}
+
 func (c CompactClient) Run(ctx context.Context, nousPort int, sessionID, workDir string, minTokens int64, timeout time.Duration) (int64, error) {
 	url := fmt.Sprintf("ws://127.0.0.1:%d/", nousPort)
 
@@ -113,7 +154,18 @@ type eventProbe struct {
 }
 
 type sessionStateProbe struct {
-	PromptTokens int64 `json:"prompt_tokens"`
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+}
+
+// Snapshot captures the per-session usage numbers the orchestrator
+// pulls from a user's nous. Used for the periodic usage logger
+// (lifecycle/usage.go) — read-only snapshot, no compaction side effect.
+type Snapshot struct {
+	PromptTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
 }
 
 // waitForEvent reads frames until one with the matching type lands.

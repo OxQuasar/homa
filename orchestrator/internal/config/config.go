@@ -43,7 +43,8 @@ const (
 	// has a full hour of message-idleness before their context is
 	// compacted out from under them.
 	defaultIdleAfterMinutes      = 60
-	defaultGCIntervalSeconds     = 60
+	defaultGCIntervalSeconds      = 60
+	defaultUsageLogIntervalMinutes = 5
 	defaultIdleWarningSeconds    = 60
 	defaultCompactTimeoutSeconds = 90
 	defaultCompactMinTokens      = 50000
@@ -185,6 +186,12 @@ type Config struct {
 	// is skipped. 0 disables the gate (always compact); negative would
 	// also disable. Default 50000.
 	CompactMinTokens int64 `json:"compact_min_tokens"`
+
+	// UsageLogIntervalMinutes drives the periodic per-user token-usage
+	// logger. Each tick walks running users, fetches session_state
+	// from their nous, and emits one structured "usage:" line per
+	// user. Set to 0 to disable. Default 5min.
+	UsageLogIntervalMinutes int `json:"usage_log_interval_minutes"`
 
 	// UploadMaxBytes caps a single POST /upload request body. Larger
 	// uploads return 413 cleanly without buffering the rejected body.
@@ -337,6 +344,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.CompactMinTokens == 0 {
 		cfg.CompactMinTokens = defaultCompactMinTokens
+	}
+	if cfg.UsageLogIntervalMinutes == 0 {
+		cfg.UsageLogIntervalMinutes = defaultUsageLogIntervalMinutes
 	}
 	// UserConfigsDir defaults to "configs" *under DataDir* (so it ends up
 	// at e.g. data/configs/). Resolved to absolute in main.go.
