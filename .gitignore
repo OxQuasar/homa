@@ -38,3 +38,4 @@
 config.local.json
 .env
 .env.local
+/backups/

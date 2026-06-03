@@ -10,6 +10,12 @@
   let joinReason = $state('');
   let mysteryInterest = $state('');
   let background = $state('');
+  // Honeypot field — bound to a visually-hidden input that humans
+  // don't see (and browser password managers / autofill skip too).
+  // Bots scraping the form fill every input; the backend rejects any
+  // signup with website != ''. Stays $state for reactivity, but in
+  // normal use it never changes from '' so the server passes the check.
+  let website = $state('');
   let error = $state<string | null>(null);
   let submitting = $state(false);
   // After successful submit, swap from form to the pending-approval
@@ -49,6 +55,7 @@
           background,
         },
         name || undefined,
+        website,
       );
       // Pending-approval gate: no cookie, no redirect. Show the
       // confirmation screen instead. `r.pending` is always true under
@@ -118,7 +125,7 @@
 
         <p class="m-close">
           Are you one of the worthy? Will you give yourself to serve a
-          great cause? Will you join us?
+          great cause? Will you apply to join us?
         </p>
       </section>
 
@@ -129,6 +136,25 @@
     </article>
   {:else}
   <form class="card" onsubmit={onSubmit}>
+    <!--
+      Honeypot. Visually hidden + aria-hidden + tabindex=-1 + autocomplete
+      off so screen-readers, keyboards, and password managers all skip it.
+      Bots scraping the form fill every input; backend silently drops any
+      signup with website != ''. The wrapper div is what hides; the input
+      itself stays visible to bot DOM scrapers.
+    -->
+    <div class="hp" aria-hidden="true">
+      <label>
+        Website
+        <input
+          type="text"
+          name="website"
+          autocomplete="off"
+          tabindex="-1"
+          bind:value={website}
+        />
+      </label>
+    </div>
     <button
       type="button"
       class="back-to-manifesto"
@@ -347,4 +373,17 @@
     margin-bottom: 0.5rem;
   }
   .back-to-manifesto:hover { color: #222; }
+
+  /* Honeypot wrapper — visually removed but kept in the DOM so naive
+     bots that read input names still see it. position:absolute + offset
+     keeps it out of flow without display:none (which some bot frameworks
+     skip). aria-hidden + tabindex=-1 + autocomplete=off keep real users
+     from ever stumbling on it. */
+  .hp {
+    position: absolute;
+    left: -10000px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+  }
 </style>

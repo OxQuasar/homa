@@ -50,10 +50,14 @@ export function signup(
   username: string,
   app: SignupApplication,
   name?: string,
+  // Honeypot — humans send '', bots fill it. Backend silently drops
+  // signups with website != ''.
+  website?: string,
 ) {
   return call<{ user_id: string; pending: boolean }>('POST', '/signup', {
     email, password, username, name,
     ...app,
+    website: website ?? '',
   });
 }
 

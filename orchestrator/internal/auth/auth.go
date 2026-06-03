@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/skipper/homa/orchestrator/internal/provision"
+	"github.com/skipper/homa/orchestrator/internal/ratelimit"
 	"github.com/skipper/homa/orchestrator/internal/sandboxstatus"
 	"github.com/skipper/homa/orchestrator/internal/store"
 )
@@ -89,6 +90,7 @@ type Service struct {
 	secureCookies  bool
 	previewBaseURL string
 	sbStatus       *sandboxstatus.Tracker // nil → no async tracking; login stays sync
+	signupLimit    *ratelimit.Limiter     // nil → no rate-limit (legacy / tests)
 	log            *slog.Logger
 }
 
@@ -108,6 +110,14 @@ func New(s *store.Store, p provision.Provisioner, secureCookies bool, previewBas
 		sbStatus:       sbStatus,
 		log:            log,
 	}
+}
+
+// WithSignupRateLimit attaches a per-IP token bucket to the Signup
+// handler. Recommended in production to defeat scripted form spam.
+// Returns the receiver for chained construction.
+func (s *Service) WithSignupRateLimit(l *ratelimit.Limiter) *Service {
+	s.signupLimit = l
+	return s
 }
 
 // CORSWrapper is the optional middleware Register wraps GET /me with.
@@ -156,6 +166,10 @@ type signupReq struct {
 	JoinReason      string `json:"join_reason"`
 	MysteryInterest string `json:"mystery_interest"`
 	Background      string `json:"background"`
+	// Honeypot — a hidden form field humans never fill in. Bots that
+	// scrape and POST tend to fill every input they see. Field name
+	// chosen to look attractive ("website" is a common bot target).
+	Website string `json:"website"`
 }
 
 type loginReq struct {
@@ -193,6 +207,29 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	// Honeypot — if the hidden field came back populated, this is a bot.
+	// Return 200 with the same shape as a real success so the bot logs
+	// it as "applied". No DB row created. Logged at warn so the operator
+	// can see hit-rates in journalctl.
+	if strings.TrimSpace(req.Website) != "" {
+		s.log.Warn("signup: honeypot tripped — silently dropping",
+			"client_ip", ratelimit.ClientIP(r), "username_attempt", req.Username)
+		writeJSON(w, http.StatusOK, signupResp{UserID: "honeypot", Pending: true})
+		return
+	}
+	// Per-IP rate limit. Bypassed when limiter is nil (tests). Returns
+	// 429 with Retry-After hint when the bucket is exhausted.
+	if s.signupLimit != nil {
+		ip := ratelimit.ClientIP(r)
+		if !s.signupLimit.Allow(ip) {
+			s.log.Warn("signup: rate-limited", "client_ip", ip)
+			w.Header().Set("Retry-After", "600") // 10 min hint
+			writeError(w, http.StatusTooManyRequests,
+				"too many signup attempts — please try again later")
+			return
+		}
+	}
+
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 	if _, err := mail.ParseAddress(req.Email); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid email")

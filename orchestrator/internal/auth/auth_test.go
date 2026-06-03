@@ -21,6 +21,7 @@ import (
 
 	"github.com/skipper/homa/orchestrator/internal/auth"
 	"github.com/skipper/homa/orchestrator/internal/provision"
+	"github.com/skipper/homa/orchestrator/internal/ratelimit"
 	"github.com/skipper/homa/orchestrator/internal/store"
 )
 
@@ -838,5 +839,81 @@ func TestLoginBumpsActiveBeforeEnsure(t *testing.T) {
 	if obs.lastActiveAtAtEnsure <= signupActive {
 		t.Errorf("LastActiveAt at EnsureRunning entry (%d) did not advance past signup (%d) — login bumped after Ensure (race)",
 			obs.lastActiveAtAtEnsure, signupActive)
+	}
+}
+
+// TestSignupHoneypotSilentDrop — a filled honeypot returns the same
+// {pending:true} shape as a real success so the bot logs it as accepted,
+// but NO user row is created. This is the cheapest bot defense and the
+// one with no false-positive risk for real users (the field is hidden
+// from them).
+func TestSignupHoneypotSilentDrop(t *testing.T) {
+	env := newTestEnv(t)
+	resp := env.post("/signup", map[string]string{
+		"email": "bot@x.io", "password": "hunter22", "username": "botbot",
+		"website": "https://buy-cheap.example",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200 (look-like-success)", resp.StatusCode)
+	}
+	// No user row in the store.
+	if _, err := env.store.GetUserByEmail(context.Background(), "bot@x.io"); err == nil {
+		t.Error("user was created despite honeypot trip")
+	}
+	// No cookie issued.
+	if c := cookieFromResp(resp); c != nil {
+		t.Error("cookie issued on honeypot trip")
+	}
+}
+
+// TestSignupRateLimit — after 5 signups (the configured capacity) from
+// the same RemoteAddr, the 6th attempt returns 429. Real users won't
+// hit this; bots will.
+func TestSignupRateLimit(t *testing.T) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "homa.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	prov := provision.NewStubProvisioner(filepath.Join(t.TempDir(), "branches"))
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	limit := ratelimit.New(2, time.Hour) // burst of 2 so the test is fast
+	svc := auth.New(st, prov, false, "", nil, log).WithSignupRateLimit(limit)
+	mux := http.NewServeMux()
+	svc.Register(mux, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	post := func(email, username string) *http.Response {
+		body, _ := json.Marshal(map[string]string{
+			"email": email, "password": "hunter22", "username": username,
+			"join_reason":      fillerEssay,
+			"mystery_interest": fillerEssay,
+			"background":       fillerEssay,
+		})
+		resp, err := http.Post(srv.URL+"/signup", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		return resp
+	}
+
+	for i := 0; i < 2; i++ {
+		r := post(fmt.Sprintf("u%d@x.io", i), fmt.Sprintf("user_%d", i))
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: %d", i+1, r.StatusCode)
+		}
+	}
+	r := post("u3@x.io", "user_3")
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("3rd call: got %d, want 429", r.StatusCode)
+	}
+	if h := r.Header.Get("Retry-After"); h == "" {
+		t.Error("missing Retry-After header on 429")
 	}
 }

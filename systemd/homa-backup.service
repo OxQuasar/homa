@@ -1,0 +1,12 @@
+[Unit]
+Description=homa: daily SQLite snapshot
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/homa/scripts/backup.sh
+# Failures are notable but shouldn't tear down anything — backup is
+# best-effort. The timer will retry tomorrow.
+Nice=10
+StandardOutput=journal
+StandardError=journal

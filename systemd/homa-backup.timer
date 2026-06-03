@@ -1,0 +1,12 @@
+[Unit]
+Description=homa: daily SQLite snapshot (timer)
+
+[Timer]
+# Daily at 03:15 local time. Persistent=true catches up if the box was
+# off when the timer should have fired (e.g. laptop closed overnight).
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+Unit=homa-backup.service
+
+[Install]
+WantedBy=timers.target

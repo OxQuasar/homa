@@ -41,6 +41,7 @@ import (
 	"github.com/skipper/homa/orchestrator/internal/prflow"
 	"github.com/skipper/homa/orchestrator/internal/repo"
 	"github.com/skipper/homa/orchestrator/internal/provision"
+	"github.com/skipper/homa/orchestrator/internal/ratelimit"
 	"github.com/skipper/homa/orchestrator/internal/sandboxstatus"
 	"github.com/skipper/homa/orchestrator/internal/proxy"
 	"github.com/skipper/homa/orchestrator/internal/sandbox"
@@ -237,7 +238,11 @@ func run(configPath string, log *slog.Logger) error {
 	// goroutine, polled by the editor at /me/sandbox to drive the
 	// loading screen during container bring-up.
 	sbStatus := sandboxstatus.New()
-	authSvc := auth.New(st, prov, cfg.SecureCookies(), cfg.PreviewBaseURL, sbStatus, log)
+	// Signup rate-limit: 5 attempts per IP per hour (refill once every
+	// 12min). Honeypot field + this limit defeat scripted form spam.
+	signupLimit := ratelimit.New(5, 12*time.Minute)
+	authSvc := auth.New(st, prov, cfg.SecureCookies(), cfg.PreviewBaseURL, sbStatus, log).
+		WithSignupRateLimit(signupLimit)
 
 	mux := http.NewServeMux()
 	// Order: auth (POST endpoints + GET /me) → ws proxy (GET /ws) → static
