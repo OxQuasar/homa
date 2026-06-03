@@ -1,5 +1,5 @@
 # Per-user state — not in version control
-/branches/
+/branches
 /data
 
 # Go
