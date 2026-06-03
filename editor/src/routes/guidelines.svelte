@@ -75,8 +75,11 @@
     </ul>
     <p>
       Want to join an active project? Want to start up a new one? Discuss
-      a plan with the admin (0xquasar). Let's use AI to push the boundaries
-      of what was possible.
+      a plan with the admin (0xquasar). 
+      
+      Use the AI to push the boundaries of what was possible. The AI chat is designed 
+      to read and edit research files. Ask it to summarize and explain research, ask it 
+      to do research. 
     </p>
   </section>
 
@@ -147,11 +150,17 @@
     padding-bottom: 0.35rem;
     border-bottom: 1px solid #eee;
   }
+  /* Subsection headers — same serif language as h1/h2 for visual
+     rhyme; smaller than section h2 (1.55) but clearly above body
+     (1.05) so the hierarchy is unambiguous. Heavier weight (600 vs
+     h2's 500) compensates for the small size gap. Extra top margin
+     gives each subsection breathing room. */
   .g-section h3 {
-    font-size: 0.95rem;
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 1.25rem;
     font-weight: 600;
-    margin: 1.5rem 0 0.5rem;
-    color: #444;
+    margin: 2rem 0 0.4rem;
+    color: #222;
   }
   .g-section p, .g-section ul, .g-section ol {
     margin: 0.6rem 0;

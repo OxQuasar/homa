@@ -113,7 +113,7 @@
           learnings and wisdom from the great lost civilizations. We
           research the present — the structure of the financial markets
           and the modern system. We fund ourselves and direct ourselves.
-          We direct the future.
+          We forge a new way forward.
         </p>
 
         <p class="m-close">
