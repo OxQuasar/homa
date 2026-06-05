@@ -39,10 +39,38 @@
   // validates (canonical source of truth).
   const usernameRegex = '^[a-z0-9_]{3,32}$';
   const ESSAY_MIN = 20;
+  const ESSAY_MAX = 4000;
+  const PASSWORD_MIN = 8;
+
+  // Live validity per field — surfaced inline so a too-short essay
+  // shows "4 / 20 minimum" in red as the user types, instead of the
+  // browser's easily-missed native popup that only fires on submit.
+  // attemptedSubmit gates the harshest visual cues (red borders) so a
+  // pristine form doesn't look angry on first load.
+  let attemptedSubmit = $state(false);
+  const usernameOk = $derived(/^[a-z0-9_]{3,32}$/.test(username));
+  const passwordOk = $derived(password.length >= PASSWORD_MIN);
+  const emailOk = $derived(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+  const joinOk = $derived(joinReason.length >= ESSAY_MIN);
+  const mysteryOk = $derived(mysteryInterest.length >= ESSAY_MIN);
+  const backgroundOk = $derived(background.length >= ESSAY_MIN);
+  const formOk = $derived(
+    emailOk && passwordOk && usernameOk && joinOk && mysteryOk && backgroundOk,
+  );
 
   async function onSubmit(e: SubmitEvent) {
     e.preventDefault();
     error = null;
+    attemptedSubmit = true;
+    // Client-side guard: keep the user on the form with red borders +
+    // counters until everything's valid. The server's the canonical
+    // validator (and would return a precise 400 message), but the
+    // client check spares the round-trip + makes the failure visible
+    // exactly where it occurred.
+    if (!formOk) {
+      submitting = false;
+      return;
+    }
     submitting = true;
     try {
       const r = await signup(
@@ -168,8 +196,36 @@
 
     <fieldset>
       <legend>Account</legend>
-      <label>Email <input type="email" bind:value={email} required autocomplete="email" /></label>
-      <label>Password <input type="password" bind:value={password} required minlength="8" autocomplete="new-password" /></label>
+      <label>
+        Email
+        <input
+          type="email"
+          bind:value={email}
+          required
+          autocomplete="email"
+          class:invalid={attemptedSubmit && !emailOk}
+        />
+        {#if attemptedSubmit && !emailOk}
+          <small class="hint err">Enter a valid email address.</small>
+        {/if}
+      </label>
+      <label>
+        Password
+        <input
+          type="password"
+          bind:value={password}
+          required
+          minlength={PASSWORD_MIN}
+          autocomplete="new-password"
+          class:invalid={attemptedSubmit && !passwordOk}
+        />
+        <small class="hint" class:err={attemptedSubmit && !passwordOk}>
+          At least {PASSWORD_MIN} characters
+          {#if password.length > 0 && password.length < PASSWORD_MIN}
+            ({password.length} so far)
+          {/if}
+        </small>
+      </label>
       <label>
         Username
         <input
@@ -182,8 +238,11 @@
           autocomplete="username"
           title="3-32 chars; lowercase a-z, digits, underscore"
           placeholder="e.g. alice_42"
+          class:invalid={attemptedSubmit && !usernameOk}
         />
-        <small>Shown on forum posts. 3-32 chars: a-z, 0-9, _</small>
+        <small class="hint" class:err={attemptedSubmit && !usernameOk}>
+          Shown on forum posts. 3-32 chars: a-z, 0-9, _
+        </small>
       </label>
       <label>Name (optional) <input type="text" bind:value={name} autocomplete="name" /></label>
     </fieldset>
@@ -196,9 +255,14 @@
           bind:value={joinReason}
           required
           minlength={ESSAY_MIN}
+          maxlength={ESSAY_MAX}
           rows="4"
           placeholder="Speak plainly."
+          class:invalid={attemptedSubmit && !joinOk}
         ></textarea>
+        <small class="hint" class:err={attemptedSubmit && !joinOk}>
+          {joinReason.length} / {ESSAY_MIN} minimum
+        </small>
       </label>
       <label>
         What mystery are you interested in investigating?
@@ -206,9 +270,14 @@
           bind:value={mysteryInterest}
           required
           minlength={ESSAY_MIN}
+          maxlength={ESSAY_MAX}
           rows="4"
           placeholder="A question, a problem, a thread you want to pull on."
+          class:invalid={attemptedSubmit && !mysteryOk}
         ></textarea>
+        <small class="hint" class:err={attemptedSubmit && !mysteryOk}>
+          {mysteryInterest.length} / {ESSAY_MIN} minimum
+        </small>
       </label>
       <label>
         What is your background?
@@ -216,13 +285,21 @@
           bind:value={background}
           required
           minlength={ESSAY_MIN}
+          maxlength={ESSAY_MAX}
           rows="4"
           placeholder="What you've done, what you study, what tools you wield."
+          class:invalid={attemptedSubmit && !backgroundOk}
         ></textarea>
+        <small class="hint" class:err={attemptedSubmit && !backgroundOk}>
+          {background.length} / {ESSAY_MIN} minimum
+        </small>
       </label>
     </fieldset>
 
     {#if error}<div class="error">{error}</div>{/if}
+    {#if attemptedSubmit && !formOk}
+      <div class="error">Please fix the highlighted fields above.</div>
+    {/if}
     <button type="submit" disabled={submitting}>{submitting ? '…' : 'Submit application'}</button>
     <p>Have an account? <a href="#/login">Log in</a></p>
   </form>
@@ -259,6 +336,26 @@
     min-height: 5rem;
   }
   .error { color: #c00; font-size: 0.9rem; }
+  /* Hints sit just under inputs. .err class flips them red when the
+     user has attempted submit + the field is invalid. Counts (e.g.
+     "4 / 20 minimum") update live as the user types so the threshold
+     is visible without trial and error. */
+  .hint {
+    color: #888;
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+  }
+  .hint.err { color: #c00; }
+  /* Red ring on invalid inputs after a submit attempt. Subtle until
+     the user clicks Submit; sharp afterwards so it's unambiguous
+     which fields need attention. */
+  input.invalid, textarea.invalid {
+    border-color: #c00;
+    background: #fff5f5;
+  }
+  input.invalid:focus, textarea.invalid:focus {
+    outline-color: #c00;
+  }
   button {
     padding: 0.7rem;
     background: #222; color: white;
