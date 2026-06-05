@@ -163,7 +163,19 @@
       </div>
     </article>
   {:else}
-  <form class="card" onsubmit={onSubmit}>
+  <!--
+    novalidate disables the browser's native HTML5 validation popup
+    so our custom red borders + counters + banner are the only error
+    surface. Without novalidate, the browser intercepts the submit
+    event before our onSubmit handler can run — user clicks Submit
+    and gets a tiny native tooltip that disappears on next click,
+    while our attemptedSubmit flag never flips to true.
+
+    The HTML5 attributes (required, minlength, pattern) stay on the
+    inputs — they're still useful for autofill + browser hints — but
+    they no longer GATE submission.
+  -->
+  <form class="card" onsubmit={onSubmit} novalidate>
     <!--
       Honeypot. Visually hidden + aria-hidden + tabindex=-1 + autocomplete
       off so screen-readers, keyboards, and password managers all skip it.
