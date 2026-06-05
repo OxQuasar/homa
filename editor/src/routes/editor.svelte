@@ -591,9 +591,47 @@
         // re-request needed — nous emits session_state at run_done with
         // updated PromptTokens, which our session_state handler captures.
         flushStreaming();
+        // Surface run errors as a visible system bubble so the user
+        // sees WHY the AI didn't respond — common failures: provider
+        // 429 / 5xx, network drop, OAuth refresh failure, model name
+        // not found. Without this, the editor silently dropped the
+        // error and the chat just looked broken.
+        if (ev.error) {
+          session.messages.push({
+            role: 'system_error',
+            text: formatRunError(ev.error),
+            createdAt: Date.now(),
+            tools: [],
+          });
+        }
         session.status = 'idle';
         break;
     }
+  }
+
+  // Format a raw run-error string for the error bubble. Common shapes
+  // we receive from nous:
+  //   "provider stream: POST http://...: 429 Too Many Requests ..."
+  //   "context canceled"
+  // We add a one-line plain-English summary up top + keep the raw
+  // string below for forensics. Pure formatting; no info loss.
+  function formatRunError(raw: string): string {
+    const lower = raw.toLowerCase();
+    let summary = '';
+    if (lower.includes('429') || lower.includes('rate_limit')) {
+      summary = 'Anthropic rate limit hit. Wait a few minutes and try again.';
+    } else if (lower.includes('401') || lower.includes('authentication')) {
+      summary = 'Authentication failed. The operator may need to refresh credentials.';
+    } else if (lower.includes('not_found') && lower.includes('model')) {
+      summary = 'The configured model name is not available on this account.';
+    } else if (lower.includes('context canceled') || lower.includes('context cancelled')) {
+      summary = 'Request was cancelled (probably by closing the editor or running into a timeout).';
+    } else if (lower.includes('connection refused') || lower.includes('connection reset')) {
+      summary = 'Could not reach the LLM provider. Check network/proxy.';
+    } else {
+      summary = 'The AI provider returned an error.';
+    }
+    return `${summary}\n\n${raw}`;
   }
 
   function flushStreaming() {

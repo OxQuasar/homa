@@ -80,7 +80,10 @@ export interface Event {
   tool_call_id?: string;
   output?: string;
   is_error?: boolean;
+  // err_str was kept for forward compatibility; the actual wire field
+  // from nous's gateway is `error` (Event.ErrStr with json:"error,omitempty").
   err_str?: string;
+  error?: string; // populated on run_done when the run failed (e.g. provider 429)
   stats?: ContextStats; // populated on EventContextStats
   // homa.idle_warning: how many seconds until the lifecycle compacts +
   // stops the user's sandbox. Sent every gc tick the user is inside
@@ -144,7 +147,7 @@ export interface BufferedError {
 // --- Editor view model ---
 
 export interface ChatMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system_error';
   text: string;
   // unix ms when the message originated. For user messages: when Send was
   // clicked. For assistant messages: when streaming began (the start of

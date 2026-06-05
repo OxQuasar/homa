@@ -13,7 +13,13 @@
 
 <div class="msg msg-{message.role}">
   <div class="header">
-    <span class="role">{message.displayLabel ?? message.role}</span>
+    <span class="role">
+      {#if message.role === 'system_error'}
+        ⚠ Error
+      {:else}
+        {message.displayLabel ?? message.role}
+      {/if}
+    </span>
     {#if ts}
       <time class="ts" title={tsISO}>{ts}</time>
     {/if}
@@ -33,6 +39,23 @@
 <style>
   .msg { padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; }
   .msg-user { background: #f7f7fa; }
+  /* System error bubble — tinted red, bordered, monospace for the
+     copy-pastable raw error. Used when nous emits run_done with an
+     error (e.g. provider 429, OAuth refresh failure). Without this,
+     the chat just stopped responding with no signal. */
+  .msg-system_error {
+    background: #fff5f5;
+    border-left: 3px solid #c33;
+    margin: 0.5rem 0;
+  }
+  .msg-system_error .role { color: #c33; font-weight: 500; }
+  .msg-system_error .text {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    color: #831a1a;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .header {
     display: flex; align-items: baseline; gap: 0.5rem;
     margin-bottom: 0.25rem;
