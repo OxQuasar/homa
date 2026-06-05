@@ -298,15 +298,25 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Email-uniqueness precheck. The DB UNIQUE constraint is still the source
-	// of truth for the race (handled below via IsEmailUniqueViolation), but
-	// checking here avoids running bcrypt + spinning up a worktree/container
-	// just to roll it back on the common dup-email path.
+	// Email + username uniqueness precheck. The DB UNIQUE constraints
+	// are still the source of truth for the race (handled below via
+	// IsEmailUniqueViolation / IsUsernameUniqueViolation), but
+	// checking here avoids running bcrypt + spinning up the entire
+	// sandbox (worktree, container, library, ports — ~10s of work)
+	// just to roll it back on the common dup paths.
 	if existing, err := s.store.GetUserByEmail(r.Context(), req.Email); err == nil && existing != nil {
 		writeError(w, http.StatusConflict, "email already registered")
 		return
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.log.Error("precheck email lookup failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if existing, err := s.store.GetUserByUsername(r.Context(), req.Username); err == nil && existing != nil {
+		writeError(w, http.StatusConflict, "username already taken")
+		return
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.log.Error("precheck username lookup failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

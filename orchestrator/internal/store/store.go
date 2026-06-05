@@ -709,14 +709,55 @@ func IsEmailUniqueViolation(err error) bool {
 }
 
 // IsUsernameUniqueViolation reports whether err is the UNIQUE-constraint
-// failure on the partial idx_users_username. Auth maps it to 409.
+// failure on the username — either the explicit partial index
+// (idx_users_username, used by older paths) or the column-level
+// constraint that modernc.org/sqlite surfaces as "users.username".
+// Auth maps it to 409.
 func IsUsernameUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed") &&
-		strings.Contains(msg, "idx_users_username")
+		(strings.Contains(msg, "idx_users_username") ||
+			strings.Contains(msg, "users.username"))
+}
+
+// GetUserByUsername returns the user with the given username, or
+// ErrNotFound. Used for the signup-time precheck so we don't waste a
+// provision cycle on a dup-username collision.
+func (s *Store) GetUserByUsername(ctx context.Context, username string) (*User, error) {
+	var u User
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, email, password_hash, name, username, join_reason,
+		       mystery_interest, background, approved, rejected, is_admin,
+		       branch_name, worktree_path, container_name,
+		       nous_port, preview_port, preview_serve_port,
+		       code_server_port, code_server_serve_port,
+		       nous_session_id, last_message_at,
+		       created_at, last_active_at
+		FROM users WHERE username = ?`, username)
+	var name, joinReason, mysteryInterest, background sql.NullString
+	if err := row.Scan(
+		&u.ID, &u.Email, &u.PasswordHash, &name, &u.Username,
+		&joinReason, &mysteryInterest, &background,
+		&u.Approved, &u.Rejected, &u.IsAdmin,
+		&u.BranchName, &u.WorktreePath, &u.ContainerName,
+		&u.NousPort, &u.PreviewPort, &u.PreviewServePort,
+		&u.CodeServerPort, &u.CodeServerServePort,
+		&u.NousSessionID, &u.LastMessageAt,
+		&u.CreatedAt, &u.LastActiveAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	u.Name = name.String
+	u.JoinReason = joinReason.String
+	u.MysteryInterest = mysteryInterest.String
+	u.Background = background.String
+	return &u, nil
 }
 
 // IsAnyUniqueViolation reports whether err is any UNIQUE-constraint failure.

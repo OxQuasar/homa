@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 )
 
 // Port allocation starting points come from mvp.md §2:
@@ -61,6 +62,16 @@ type Provisioner interface {
 type StubProvisioner struct {
 	branchesDir string
 	ports       *PortAllocator
+	// provisionCalls counts Provision() invocations. Tests assert on
+	// this to catch wasted-work bugs (e.g. provision running before
+	// a cheap dup-username/email check fails).
+	provisionCalls int64
+}
+
+// ProvisionCalls returns the number of times Provision() has been
+// invoked. Thread-safe via atomic.
+func (p *StubProvisioner) ProvisionCalls() int64 {
+	return atomic.LoadInt64(&p.provisionCalls)
 }
 
 // NewStubProvisioner returns a stub against branchesDir with default port
@@ -92,6 +103,7 @@ func (p *StubProvisioner) EnsureRunning(_ context.Context, _ string) error { ret
 // Provision returns placeholder values for the user. It does not touch disk,
 // run git, start containers, or invoke tailscale.
 func (p *StubProvisioner) Provision(_ context.Context, userID string) (Result, error) {
+	atomic.AddInt64(&p.provisionCalls, 1)
 	if userID == "" {
 		return Result{}, fmt.Errorf("provision: empty userID")
 	}
