@@ -1251,3 +1251,37 @@ func TestChangePassword_Unauthenticated(t *testing.T) {
 		t.Errorf("anon: %d, want 401", resp.StatusCode)
 	}
 }
+
+// TestChangePassword_TooLong — new password over bcrypt's 72-byte limit
+// returns a clean 400, not a 500 from the bcrypt error. Regression
+// guard for B1.
+func TestChangePassword_TooLong(t *testing.T) {
+	env := newTestEnv(t)
+	env.post("/signup", map[string]string{
+		"email": "u4@x.io", "password": "validpass11", "username": "user4",
+	}).Body.Close()
+	env.approve("u4@x.io")
+	env.post("/login", map[string]string{"email": "u4@x.io", "password": "validpass11"}).Body.Close()
+
+	long := strings.Repeat("a", 73) // 73 bytes > 72
+	resp := env.post("/me/password", map[string]string{
+		"current_password": "validpass11",
+		"new_password":     long,
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("too long: %d, want 400 (not 500)", resp.StatusCode)
+	}
+}
+
+// TestSignup_PasswordTooLong — same guard on signup. > 72 bytes → 400.
+func TestSignup_PasswordTooLong(t *testing.T) {
+	env := newTestEnv(t)
+	resp := env.post("/signup", map[string]string{
+		"email": "long@x.io", "password": strings.Repeat("z", 80), "username": "longpw",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("signup long pw: %d, want 400", resp.StatusCode)
+	}
+}

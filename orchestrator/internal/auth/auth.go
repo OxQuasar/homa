@@ -39,6 +39,11 @@ const (
 	// nous-generated ids.
 	nousSessionIDBytes = 4
 	minPasswordLen = 8
+	// maxPasswordLen — bcrypt silently truncates beyond 72 bytes and
+	// GenerateFromPassword *errors* past it. Validate up front so an
+	// over-long password returns a clear 400 instead of a confusing
+	// 500 from the bcrypt error. Applies to signup + change-password.
+	maxPasswordLen = 72
 	bcryptCost     = bcrypt.DefaultCost
 
 	// ensureRunningBgTimeout caps how long the background goroutine
@@ -278,6 +283,10 @@ func (s *Service) Signup(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Password) < minPasswordLen {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("password must be at least %d characters", minPasswordLen))
+		return
+	}
+	if len(req.Password) > maxPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("password must be at most %d characters", maxPasswordLen))
 		return
 	}
 	req.Username = strings.TrimSpace(strings.ToLower(req.Username))
@@ -629,6 +638,11 @@ func (s *Service) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if len(req.NewPassword) < minPasswordLen {
 		writeError(w, http.StatusBadRequest,
 			fmt.Sprintf("new password must be at least %d characters", minPasswordLen))
+		return
+	}
+	if len(req.NewPassword) > maxPasswordLen {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("new password must be at most %d characters", maxPasswordLen))
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)

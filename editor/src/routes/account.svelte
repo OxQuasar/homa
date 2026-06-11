@@ -10,6 +10,9 @@
   import { me, changePassword } from '../lib/api';
 
   const PASSWORD_MIN = 8;
+  // bcrypt truncates beyond 72 bytes; server rejects past it. Cap the
+  // input so the user can't silently exceed it.
+  const PASSWORD_MAX = 72;
 
   let email = $state('');
   let loaded = $state(false);
@@ -33,7 +36,7 @@
     loaded = true;
   });
 
-  const nextOk = $derived(next.length >= PASSWORD_MIN);
+  const nextOk = $derived(next.length >= PASSWORD_MIN && next.length <= PASSWORD_MAX);
   const matchOk = $derived(next.length > 0 && next === confirm);
   const formOk = $derived(current.length > 0 && nextOk && matchOk);
 
@@ -81,10 +84,10 @@
           </label>
           <label>
             New password
-            <input type="password" bind:value={next} autocomplete="new-password" required />
+            <input type="password" bind:value={next} autocomplete="new-password" maxlength={PASSWORD_MAX} required />
             <small class="hint" class:err={next.length > 0 && !nextOk}>
               At least {PASSWORD_MIN} characters
-              {#if next.length > 0 && !nextOk}({next.length} so far){/if}
+              {#if next.length > 0 && next.length < PASSWORD_MIN}({next.length} so far){/if}
             </small>
           </label>
           <label>
