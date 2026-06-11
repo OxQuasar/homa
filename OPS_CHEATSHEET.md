@@ -466,10 +466,33 @@ journalctl --user -u homa -f          # if running under systemd-user
 
 ```
 ~/homa             OxQuasar/homa  (main)
-~/nous             OxQuasar/nous  (homa branch — adds WS transport + session_id pinning)
+~/nous             OxQuasar/nous  (master — adds WS transport + session_id pinning)
 ```
 
-After any nous source change, rebuild the sandbox image (which bundles the nous binary): `bash ~/homa/sandbox/build.sh`.
+## Updating the sandbox nous
+
+The sandbox image bakes a pre-built nous binary (`Containerfile: COPY
+nous /usr/local/bin/nous`). To move sandboxes to a new nous revision:
+
+```bash
+# See the diff between deployed image rev and a target ref — changes nothing:
+~/homa/scripts/update-nous.sh --ref master --dry-run
+
+# Build current ~/nous HEAD into the image (no container recreation):
+~/homa/scripts/update-nous.sh
+
+# Checkout+pull master, build, AND recreate running user containers:
+~/homa/scripts/update-nous.sh --ref master --recreate
+```
+
+- The deployed nous rev is traceable via the image's OCI label:
+  `podman image inspect homa-sandbox:latest --format '{{index .Labels "org.opencontainers.image.revision"}}'`
+- Without `--recreate`, running sandboxes keep the OLD image until next
+  restart; new spawns use the new image immediately.
+- `--recreate` drops active sandbox WS sessions (users see "Sandbox
+  disconnected → Reconnect"). Use during a quiet window.
+- The lower-level `sandbox/build.sh` builds-current-HEAD only; prefer
+  `update-nous.sh` so the rev gets stamped + you see the diff first.
 
 ## Where state lives (post-move)
 
