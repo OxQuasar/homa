@@ -68,6 +68,7 @@ func Register(mux *http.ServeMux, log *slog.Logger) (http.Handler, error) {
 	mux.HandleFunc("GET /admin", indexHandler)
 	mux.HandleFunc("GET /guidelines", indexHandler)
 	mux.HandleFunc("GET /forgot", indexHandler)
+	mux.HandleFunc("GET /account", indexHandler)
 
 	mux.Handle("GET /assets/", assetCacheWrap(http.StripPrefix("/assets/", http.FileServer(http.FS(assetsFS)))))
 

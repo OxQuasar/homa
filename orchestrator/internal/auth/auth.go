@@ -158,14 +158,19 @@ func (s *Service) Register(mux *http.ServeMux, corsWrap CORSWrapper) {
 	// of a silent hang or a confusing WS-disconnected state. Same auth
 	// gate; same CORS wrap as /me.
 	sandboxHandler := s.RequireAuth(http.HandlerFunc(s.SandboxStatus))
+	// Self-service password change for a logged-in user.
+	passwordHandler := s.RequireAuth(http.HandlerFunc(s.ChangePassword))
 	if corsWrap != nil {
 		meHandler = corsWrap(meHandler)
 		sandboxHandler = corsWrap(sandboxHandler)
+		passwordHandler = corsWrap(passwordHandler)
 		mux.Handle("OPTIONS /me", meHandler)
 		mux.Handle("OPTIONS /me/sandbox", sandboxHandler)
+		mux.Handle("OPTIONS /me/password", passwordHandler)
 	}
 	mux.Handle("GET /me", meHandler)
 	mux.Handle("GET /me/sandbox", sandboxHandler)
+	mux.Handle("POST /me/password", passwordHandler)
 }
 
 // --- request / response shapes ---
@@ -184,6 +189,13 @@ type signupReq struct {
 	// scrape and POST tend to fill every input they see. Field name
 	// chosen to look attractive ("website" is a common bot target).
 	Website string `json:"website"`
+}
+
+// changePasswordReq is the body for POST /me/password. Both fields
+// required; new password is length-validated server-side.
+type changePasswordReq struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
 }
 
 type loginReq struct {
@@ -586,6 +598,63 @@ func (s *Service) Me(w http.ResponseWriter, r *http.Request) {
 		PreviewURL:    s.previewURLFor(u),
 		NousSessionID: u.NousSessionID,
 	})
+}
+
+// ChangePassword lets a logged-in user rotate their own password.
+// Requires the current password (proof of identity beyond just holding
+// a session cookie — defends against a left-open session being used to
+// lock the real owner out). On success:
+//   - the password hash is updated,
+//   - ALL of the user's sessions are revoked (logs out every other
+//     device — the right move if the change is prompted by a suspected
+//     leak),
+//   - a fresh session cookie is issued for THIS browser so the user
+//     stays logged in where they are.
+func (s *Service) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	u, ok := UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	var req changePasswordReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Verify current password — holding a cookie isn't enough.
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+		writeError(w, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+	if len(req.NewPassword) < minPasswordLen {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("new password must be at least %d characters", minPasswordLen))
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		s.log.Error("change password: hash", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := s.store.UpdatePasswordHash(r.Context(), u.ID, string(hash)); err != nil {
+		s.log.Error("change password: update", "user_id", u.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	// Revoke every session (incl. the current one), then re-issue a
+	// fresh cookie for this browser. Net effect: other devices are
+	// logged out; current tab keeps working with a rotated token.
+	if _, err := s.store.DeleteWebSessionsByUser(r.Context(), u.ID); err != nil {
+		s.log.Warn("change password: revoke sessions", "user_id", u.ID, "err", err)
+	}
+	if err := s.issueCookie(r.Context(), w, r, u.ID); err != nil {
+		s.log.Error("change password: reissue cookie", "user_id", u.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "password changed but session reissue failed; please log in again")
+		return
+	}
+	s.log.Info("change password: success", "user_id", u.ID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // SandboxStatus returns the bring-up state of the caller's sandbox

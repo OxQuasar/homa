@@ -1114,3 +1114,140 @@ func TestSignupDupUsername_RaceFallthroughMapsTo409(t *testing.T) {
 		t.Errorf("got %d, want 409", resp.StatusCode)
 	}
 }
+
+// postFresh POSTs with a throwaway client (no cookie jar) so the call
+// neither carries the env's session cookie nor stores any Set-Cookie.
+// Used to verify login outcomes independent of the logged-in client.
+func (e *testEnv) postFresh(path string, body any) *http.Response {
+	e.t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&buf).Encode(body)
+	}
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		e.t.Fatalf("postFresh: %v", err)
+	}
+	return resp
+}
+
+func (e *testEnv) userID(email string) string {
+	e.t.Helper()
+	u, err := e.store.GetUserByEmail(context.Background(), email)
+	if err != nil {
+		e.t.Fatalf("userID(%s): %v", email, err)
+	}
+	return u.ID
+}
+
+// TestChangePassword_Happy — logged-in user changes password with the
+// correct current password. Verifies: 200, hash updated (old pw fails,
+// new pw works), other sessions revoked, current session still valid.
+func TestChangePassword_Happy(t *testing.T) {
+	env := newTestEnv(t)
+	env.post("/signup", map[string]string{
+		"email": "u@x.io", "password": "oldpassword1", "username": "user1",
+	}).Body.Close()
+	env.approve("u@x.io")
+	login := env.post("/login", map[string]string{"email": "u@x.io", "password": "oldpassword1"})
+	login.Body.Close()
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("login: %d", login.StatusCode)
+	}
+
+	// Seed a second session (another device).
+	uid := env.userID("u@x.io")
+	if err := env.store.CreateWebSession(context.Background(),
+		"other-device-token-padding-padding-pad", uid, 9_999_999_999); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := env.post("/me/password", map[string]string{
+		"current_password": "oldpassword1",
+		"new_password":     "brandnewpass2",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("change password: %d", resp.StatusCode)
+	}
+
+	// Old password no longer logs in.
+	old := env.postFresh("/login", map[string]string{"email": "u@x.io", "password": "oldpassword1"})
+	old.Body.Close()
+	if old.StatusCode != http.StatusUnauthorized {
+		t.Errorf("old password still works: %d", old.StatusCode)
+	}
+	// New password works.
+	nw := env.postFresh("/login", map[string]string{"email": "u@x.io", "password": "brandnewpass2"})
+	nw.Body.Close()
+	if nw.StatusCode != http.StatusOK {
+		t.Errorf("new password rejected: %d", nw.StatusCode)
+	}
+	// Other device session revoked.
+	if _, err := env.store.GetWebSession(context.Background(), "other-device-token-padding-padding-pad"); err == nil {
+		t.Error("other device session survived; should be revoked")
+	}
+	// Current client still authenticated (cookie re-issued).
+	me := env.get("/me")
+	me.Body.Close()
+	if me.StatusCode != http.StatusOK {
+		t.Errorf("current session lost: /me = %d", me.StatusCode)
+	}
+}
+
+// TestChangePassword_WrongCurrent — wrong current password → 401, no change.
+func TestChangePassword_WrongCurrent(t *testing.T) {
+	env := newTestEnv(t)
+	env.post("/signup", map[string]string{
+		"email": "u2@x.io", "password": "rightpass11", "username": "user2",
+	}).Body.Close()
+	env.approve("u2@x.io")
+	env.post("/login", map[string]string{"email": "u2@x.io", "password": "rightpass11"}).Body.Close()
+
+	resp := env.post("/me/password", map[string]string{
+		"current_password": "WRONGpassword",
+		"new_password":     "newpassword22",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong current: %d, want 401", resp.StatusCode)
+	}
+	relog := env.postFresh("/login", map[string]string{"email": "u2@x.io", "password": "rightpass11"})
+	relog.Body.Close()
+	if relog.StatusCode != http.StatusOK {
+		t.Errorf("original password broke after failed change: %d", relog.StatusCode)
+	}
+}
+
+// TestChangePassword_TooShort — new password under the minimum → 400.
+func TestChangePassword_TooShort(t *testing.T) {
+	env := newTestEnv(t)
+	env.post("/signup", map[string]string{
+		"email": "u3@x.io", "password": "validpass11", "username": "user3",
+	}).Body.Close()
+	env.approve("u3@x.io")
+	env.post("/login", map[string]string{"email": "u3@x.io", "password": "validpass11"}).Body.Close()
+
+	resp := env.post("/me/password", map[string]string{
+		"current_password": "validpass11",
+		"new_password":     "short",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("too short: %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestChangePassword_Unauthenticated — no cookie → 401.
+func TestChangePassword_Unauthenticated(t *testing.T) {
+	env := newTestEnv(t)
+	resp := env.postFresh("/me/password", map[string]string{
+		"current_password": "x", "new_password": "yyyyyyyy",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anon: %d, want 401", resp.StatusCode)
+	}
+}

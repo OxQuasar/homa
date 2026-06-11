@@ -187,3 +187,13 @@ export function adminResetPassword(id: number): Promise<PasswordResetResult> {
 export function adminDismissPasswordReset(id: number): Promise<AdminPasswordResetRow> {
   return call('POST', `/api/admin/password-resets/${id}/dismiss`);
 }
+
+// Self-service password change for a logged-in user. On success the
+// server revokes all other sessions and re-issues this browser's
+// cookie (so the current tab stays authenticated).
+export function changePassword(currentPassword: string, newPassword: string) {
+  return call<{ ok: true }>('POST', '/me/password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
+}

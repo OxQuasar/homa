@@ -807,6 +807,7 @@
         >Open VS Code</a>
       {/if}
       <a class="guidelines-link" href="#/guidelines" title="First-time-user guidelines">Guidelines</a>
+      <a class="account-link" href="#/account" title="Account settings — change password">Account</a>
       {#if isAdmin}
         <a class="admin-link" href="#/admin" title="Application review">Admin</a>
       {/if}
@@ -1022,6 +1023,19 @@
     white-space: nowrap;
   }
   .guidelines-link:hover { background: #ececec; color: #222; }
+
+  /* Account link — same neutral shape as guidelines. */
+  .account-link {
+    padding: 0.25rem 0.6rem;
+    border: 1px solid #ccc;
+    background: #f7f7f7;
+    color: #555;
+    border-radius: 4px;
+    text-decoration: none;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .account-link:hover { background: #ececec; color: #222; }
 
   /* Admin link — visible only when m.is_admin. Mirrors vscode-link
      shape with admin-blue palette so they read as the same kind of nav. */
